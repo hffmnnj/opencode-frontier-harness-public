@@ -1,0 +1,23 @@
+{
+  "name": "opencode-frontier-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Research-grounded harness upgrades for OpenCode V2",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests",
+    "build": "bun build src/index.ts src/provider-compat.ts src/loop-guard.ts src/compaction.ts src/insights.ts --target=bun --external=@opencode/plugin --external=effect --outdir=dist",
+    "check": "bun run typecheck && bun run test && bun run build"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.2.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.5",
+    "typescript": "5.9.3"
+  }
+}

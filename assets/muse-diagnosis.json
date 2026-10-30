@@ -1,0 +1,142 @@
+{
+  "spec": {
+    "root": "report",
+    "elements": {
+      "report": {
+        "type": "Report",
+        "props": {
+          "title": "Example: where a sample request fails",
+          "subtitle": "Synthetic diagnosis. No real account, client or provider involved.",
+          "source": "Synthetic example — invented evidence for a fictional provider adapter",
+          "period": "Illustrative sample; all times fictional",
+          "note": "All observations and error codes are invented to demonstrate report layout.",
+          "synthetic": true
+        },
+        "children": [
+          "flow",
+          "facts",
+          "conclusion"
+        ]
+      },
+      "flow": {
+        "type": "Flow",
+        "props": {
+          "title": "Example: same account, different illustrative outcomes",
+          "nodes": [
+            {
+              "id": "account",
+              "label": "Account"
+            },
+            {
+              "id": "native",
+              "label": "Client"
+            },
+            {
+              "id": "adapter",
+              "label": "Adapter"
+            },
+            {
+              "id": "ok",
+              "label": "Success"
+            },
+            {
+              "id": "deny",
+              "label": "Denial"
+            }
+          ],
+          "edges": [
+            {
+              "from": "account",
+              "to": "native"
+            },
+            {
+              "from": "account",
+              "to": "adapter"
+            },
+            {
+              "from": "native",
+              "to": "ok"
+            },
+            {
+              "from": "adapter",
+              "to": "deny"
+            }
+          ]
+        },
+        "children": []
+      },
+      "facts": {
+        "type": "Table",
+        "props": {
+          "title": "Example evidence and ruled-out causes",
+          "columns": [
+            {
+              "key": "observation",
+              "label": "Sample observation"
+            },
+            {
+              "key": "evidence",
+              "label": "Illustrative evidence"
+            },
+            {
+              "key": "meaning",
+              "label": "What it shows in this example"
+            }
+          ],
+          "rows": [
+            {
+              "observation": "Prior adapter success",
+              "evidence": "Day 0 · 09:00 (fictional)",
+              "meaning": "The sample route worked earlier"
+            },
+            {
+              "observation": "Adapter files unchanged",
+              "evidence": "Example check: no source edits",
+              "meaning": "No local edit in the sample window"
+            },
+            {
+              "observation": "Native model probe",
+              "evidence": "SAMPLE_PROBE_OK",
+              "meaning": "The fictional account is usable"
+            },
+            {
+              "observation": "Shared credential refreshed",
+              "evidence": "Day 1 · 04:00 (fictional)",
+              "meaning": "Refresh did not restore the sample adapter"
+            },
+            {
+              "observation": "Adapter response",
+              "evidence": "Sample error: client-check rejected",
+              "meaning": "Client-check rejection, not login expiry"
+            },
+            {
+              "observation": "Agent routes",
+              "evidence": "Restored in the example",
+              "meaning": "No permanent substitution in the story"
+            },
+            {
+              "observation": "Transport and headers",
+              "evidence": "Left unchanged",
+              "meaning": "No bridge or impersonation in the example"
+            }
+          ]
+        },
+        "children": []
+      },
+      "conclusion": {
+        "type": "Insight",
+        "props": {
+          "title": "Example conclusion: no sign-in URL is implied",
+          "text": "In this synthetic scenario the first-party client succeeds while the adapter receives a client-check rejection. The example separates sign-in failure from a client-identity boundary; it is not a real diagnosis.",
+          "caveat": "Synthetic illustration only. No provider account exists, no request was sent, and no bypass was attempted."
+        },
+        "children": []
+      }
+    }
+  },
+  "theme": "dark",
+  "width": 1200,
+  "pageHeight": 1400,
+  "scale": 1,
+  "chartSvg": false
+}
