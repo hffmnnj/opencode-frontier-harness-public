@@ -1,0 +1,180 @@
+{
+  "spec": {
+    "root": "report",
+    "elements": {
+      "report": {
+        "type": "Report",
+        "props": {
+          "title": "Example: verification snapshot",
+          "subtitle": "Synthetic sample of local checks and a sample report.",
+          "source": "Synthetic example — invented check names, counts and outcomes",
+          "period": "Sample data, not a live run",
+          "note": "Illustrative values only. Not measurements, installation proof, or a benchmark.",
+          "synthetic": true
+        },
+        "children": [
+          "metrics",
+          "checks",
+          "live",
+          "limits"
+        ]
+      },
+      "metrics": {
+        "type": "Row",
+        "props": {
+          "gap": 20
+        },
+        "children": [
+          "tests",
+          "active",
+          "restarts"
+        ]
+      },
+      "tests": {
+        "type": "Metric",
+        "props": {
+          "label": "Sample tests passed",
+          "value": 20,
+          "changeUnit": "absolute",
+          "favorable": "neutral"
+        },
+        "children": []
+      },
+      "active": {
+        "type": "Metric",
+        "props": {
+          "label": "Sample plugins active",
+          "value": 3,
+          "changeUnit": "absolute",
+          "favorable": "neutral"
+        },
+        "children": []
+      },
+      "restarts": {
+        "type": "Metric",
+        "props": {
+          "label": "Sample restarts",
+          "value": 0,
+          "changeUnit": "absolute",
+          "favorable": "neutral"
+        },
+        "children": []
+      },
+      "checks": {
+        "type": "Table",
+        "props": {
+          "title": "Example verification boundary",
+          "columns": [
+            {
+              "key": "check",
+              "label": "Sample check"
+            },
+            {
+              "key": "result",
+              "label": "Illustrative result"
+            },
+            {
+              "key": "limit",
+              "label": "Example scope"
+            }
+          ],
+          "rows": [
+            {
+              "check": "Static typecheck",
+              "result": "Sample: pass",
+              "limit": "Example package types"
+            },
+            {
+              "check": "Behavior suite",
+              "result": "Sample: 20 pass, 0 fail",
+              "limit": "Example callbacks and requests"
+            },
+            {
+              "check": "Build",
+              "result": "Sample: bundles built",
+              "limit": "Example entry points"
+            },
+            {
+              "check": "Registration",
+              "result": "Sample: status = active",
+              "limit": "Illustrative install only"
+            },
+            {
+              "check": "Report tool",
+              "result": "Sample: counters returned",
+              "limit": "Illustrative caller scope"
+            },
+            {
+              "check": "Provider auth",
+              "result": "Sample: client-check denial",
+              "limit": "Fictional provider; not repaired"
+            }
+          ]
+        },
+        "children": []
+      },
+      "live": {
+        "type": "Table",
+        "props": {
+          "title": "Example report snapshot",
+          "columns": [
+            {
+              "key": "measure",
+              "label": "Sample measure"
+            },
+            {
+              "key": "value",
+              "label": "Value"
+            },
+            {
+              "key": "meaning",
+              "label": "Interpretation"
+            }
+          ],
+          "rows": [
+            {
+              "measure": "Context preparations",
+              "value": 1,
+              "meaning": "Illustrative hook count, not completed requests"
+            },
+            {
+              "measure": "Tool outcomes",
+              "value": "1 completed · 0 errors",
+              "meaning": "Excludes the report tool itself"
+            },
+            {
+              "measure": "Model baselines",
+              "value": 1,
+              "meaning": "Illustrative provider/model isolation"
+            },
+            {
+              "measure": "Native usage",
+              "value": "Sample available",
+              "meaning": "Lifetime counters, not savings"
+            },
+            {
+              "measure": "Compaction preparations",
+              "value": 0,
+              "meaning": "No summary-quality test claimed"
+            }
+          ]
+        },
+        "children": []
+      },
+      "limits": {
+        "type": "Insight",
+        "props": {
+          "title": "Example: evidence before improvement claims",
+          "text": "This synthetic snapshot illustrates the difference between offline checks and live evidence. It does not show a real environment, cache improvement, latency reduction or quality uplift.",
+          "caveat": "Fictional values only. No provider was contacted and no install is claimed."
+        },
+        "children": []
+      }
+    }
+  },
+  "theme": "light",
+  "width": 1200,
+  "pageHeight": 1500,
+  "scale": 1,
+  "chartSvg": false
+}

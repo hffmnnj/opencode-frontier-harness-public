@@ -1,0 +1,142 @@
+{
+  "spec": {
+    "root": "report",
+    "elements": {
+      "report": {
+        "type": "Report",
+        "props": {
+          "title": "Example: research map to harness decisions",
+          "subtitle": "Synthetic sample. Reuse strong foundations; add only the gaps.",
+          "source": "Synthetic example — invented research notes and illustrative decisions",
+          "period": "Sample data, not a real project record",
+          "note": "All dates, results and installation states are fictional. Not a benchmark or deployment record.",
+          "synthetic": true
+        },
+        "children": [
+          "flow",
+          "mapping",
+          "insight"
+        ]
+      },
+      "flow": {
+        "type": "Flow",
+        "props": {
+          "title": "Example: three additions around an agent loop",
+          "nodes": [
+            {
+              "id": "calls",
+              "label": "Tools"
+            },
+            {
+              "id": "guard",
+              "label": "Loop guard"
+            },
+            {
+              "id": "context",
+              "label": "Prompt cache"
+            },
+            {
+              "id": "summary",
+              "label": "Compaction"
+            },
+            {
+              "id": "observe",
+              "label": "Insights"
+            }
+          ],
+          "edges": [
+            {
+              "from": "calls",
+              "to": "guard"
+            },
+            {
+              "from": "guard",
+              "to": "context"
+            },
+            {
+              "from": "context",
+              "to": "summary"
+            },
+            {
+              "from": "context",
+              "to": "observe"
+            }
+          ]
+        },
+        "children": []
+      },
+      "mapping": {
+        "type": "Table",
+        "props": {
+          "title": "Example research-to-implementation decisions",
+          "columns": [
+            {
+              "key": "finding",
+              "label": "Sample principle"
+            },
+            {
+              "key": "owner",
+              "label": "Example owner"
+            },
+            {
+              "key": "decision",
+              "label": "Illustrative decision"
+            }
+          ],
+          "rows": [
+            {
+              "finding": "Programmatic tool calling",
+              "owner": "Native Code Mode",
+              "decision": "Reuse; no second runtime"
+            },
+            {
+              "finding": "Keep large results out of context",
+              "owner": "Existing output limits",
+              "decision": "Reuse; no second pruner"
+            },
+            {
+              "finding": "Preserve prompt prefixes",
+              "owner": "Existing cache owner",
+              "decision": "Keep ownership; advice can re-anchor"
+            },
+            {
+              "finding": "Background completion notices",
+              "owner": "Native shell and subagents",
+              "decision": "Reuse; no poller or wake loop"
+            },
+            {
+              "finding": "Detect unchanged repeated work",
+              "owner": "New loop guard",
+              "decision": "Advice at 3; failed-call guard after 6"
+            },
+            {
+              "finding": "Avoid dropping work in summaries",
+              "owner": "New compaction guidance",
+              "decision": "Continuity; bounded fallback"
+            },
+            {
+              "finding": "Measure before optimizing",
+              "owner": "New read-only insights",
+              "decision": "Scoped counts + structural fingerprints"
+            }
+          ]
+        },
+        "children": []
+      },
+      "insight": {
+        "type": "Insight",
+        "props": {
+          "title": "Example layering summary",
+          "text": "This sample shows three additions that complement existing routing, permissions, scheduling and transcript storage. No component is replaced in the example.",
+          "caveat": "Synthetic illustration only. It does not describe a live install, a real provider, or measured results."
+        },
+        "children": []
+      }
+    }
+  },
+  "theme": "dark",
+  "width": 1200,
+  "pageHeight": 1600,
+  "scale": 1,
+  "chartSvg": false
+}
