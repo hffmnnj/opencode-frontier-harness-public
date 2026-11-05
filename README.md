@@ -8,7 +8,7 @@ Three small plugins informed by [Factory's frontier-harness article](https://fac
 | --- | --- | --- |
 | `frontier-loop-guard` | Advises after three consecutive identical tool observations. After six identical failures, denies another unchanged invocation with feedback. | Interrupt sessions, block successful polling, alter permissions, change provider retries, or serialize calls already in flight. |
 | `frontier-compaction` | Adds continuity guidance; provides a known-cap 16,000-token fallback only when no output budget already exists. | Schedule compaction, replace supplied checkpoints, override an existing `maxTokens`, or rewrite conversation history. |
-| `frontier-insights` | Exposes `frontier_report` through Code Mode for the calling session's observations and native counters. | Store transcripts or tool arguments, report another session, estimate savings, or claim observed section changes are measured provider cache misses. |
+| `frontier-insights` | Exposes `frontier_report` for local observations/native counters and `frontier_outcome` for self-reported assignment results and verified-descendant aggregates. | Store transcripts/tool arguments, expose siblings or unrelated sessions, independently verify outcomes, estimate savings, or claim section changes are provider cache misses. |
 
 The loop guard compares canonical JSON fingerprints of tool/input and semantic content/output or error message. Volatile success metadata is excluded. A changed call or observation, a new user prompt, or a plugin reload clears the applicable streak. Changing successful results never form a stagnant streak; unchanged successful results remain advisory-only. State is bounded to 128 sessions per plugin instance and can be evicted when that bound is reached.
 
@@ -17,6 +17,10 @@ The compaction instruction preserves the active goal and scope, completed versus
 The loop guard's advice changes the system section when it appears or disappears. The existing prompt-cache projection can re-anchor its retained snapshots on those transitions. This is a bounded trade-off for loop recovery, not a cache-neutral optimization or measured saving.
 
 Insights reports context preparations, system/tool-definition section changes, current message/tool counts, tool outcomes and total observed elapsed milliseconds, retry decisions, and compaction preparations. It does not count these as successful model requests or completed compactions. Model baselines are isolated by provider/model/variant and bounded to 16 per session; outstanding call timing is bounded to 256. Raw native token counters and cost are session lifetime values; observations cover only the current plugin instance and may reset on reload or eviction. Concurrent tool durations are summed, not wall-clock session duration.
+
+Assignment reports are explicitly self-reported, separate from native execution success. `frontier_outcome` replaces only the caller's latest report. It accepts `outcome` (`complete`, `partial`, or `blocked`), `checks` (`passed`, `failed`, `blocked`, `notRun` nonnegative integer counts), an optional `blocker` category (`authentication`, `environment`, `tooling`, `authorization`, or `other`), and an `artifacts` count. Complete reports cannot contain failed, blocked, or unrun checks. No free text or artifact paths are retained.
+
+`frontier_report` adds the caller's report and aggregate counts for observed descendants whose native parent chain was verified. Children cannot see sibling or unrelated reports. Aggregates are incomplete after reload/eviction or missing ancestry; they are not a task database or independent acceptance. Retention is bounded to 128 latest reports, ancestry to 16 levels, and native lookups to 16 outstanding requests with a shared 750 ms deadline per operation. Three distinct descendants currently reporting the same blocker category produce one advisory per episode to diagnose the shared setup, not a dispatch block or automatic action.
 
 ## Install
 
@@ -46,6 +50,8 @@ The package root also exports an aggregate plugin containing these three modules
 ## Use
 
 Ask the agent for a harness report, or discover `frontier_report` through Code Mode search and call its returned tool path with `{}`. It accepts no session selector. No extra credentials are needed.
+
+Workers may discover `frontier_outcome` to report the current assignment, for example `{ outcome: "partial", checks: { passed: 2, failed: 0, blocked: 1, notRun: 0 }, blocker: "authentication", artifacts: 1 }`. Human-readable handoffs still provide exact commands, artifacts, and remaining gaps; the numeric report never replaces them.
 
 ## Separate compatibility candidate
 

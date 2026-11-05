@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { REPORT_TOOL_NAME, setupInsights } from "../src/insights";
+import { OUTCOME_TOOL_NAME, REPORT_TOOL_NAME, setupInsights } from "../src/insights";
 
 type Handler = (event: any) => unknown;
 
@@ -8,6 +8,7 @@ interface Fake {
   sessionHooks: Map<string, Handler[]>;
   toolHooks: Map<string, Handler[]>;
   addedTool: any;
+  tools: Map<string, any>;
   getImpl: (input: { sessionID: string }) => Promise<unknown>;
   ctx: any;
 }
@@ -21,6 +22,7 @@ function makeFake(getImpl?: Fake["getImpl"]): Fake {
     sessionHooks,
     toolHooks,
     addedTool: undefined,
+    tools: new Map(),
     getImpl: getImpl ?? (async () => ({ tokens: { input: 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 } }, cost: 0 })),
     ctx: undefined,
   };
@@ -39,7 +41,7 @@ function makeFake(getImpl?: Fake["getImpl"]): Fake {
     tool: {
       hook: hookFor(toolHooks),
       transform: async (cb: (editor: any) => void) => {
-        cb({ add: (tool: any) => { addedTool = tool; fake.addedTool = tool; } });
+        cb({ add: (tool: any) => { addedTool = tool; fake.addedTool = tool; fake.tools.set(tool.name, tool); } });
         return { dispose: async () => {} };
       },
     },
@@ -52,10 +54,23 @@ function fire(store: Map<string, Handler[]>, name: string, event: any): void {
 }
 
 async function reportFor(fake: Fake, sessionID: string): Promise<any> {
-  const tool = fake.addedTool;
+  const tool = fake.tools.get(REPORT_TOOL_NAME);
   expect(tool.name).toBe(REPORT_TOOL_NAME);
   const result = await tool.execute({}, { sessionID });
   return JSON.parse(typeof result.content === "string" ? result.content : JSON.stringify(result.content));
+}
+
+async function outcomeFor(fake: Fake, sessionID: string, input: unknown): Promise<unknown> {
+  return fake.tools.get(OUTCOME_TOOL_NAME).execute(input, { sessionID });
+}
+
+const checks = (passed: number, failed = 0, blocked = 0, notRun = 0) => ({ passed, failed, blocked, notRun });
+
+function nativeTree(parents: Record<string, string | undefined>): Fake {
+  return makeFake(async ({ sessionID }) => {
+    if (!(sessionID in parents)) throw new Error("missing");
+    return { id: sessionID, ...(parents[sessionID] === undefined ? {} : { parentID: parents[sessionID] }) };
+  });
 }
 
 function contextEvent(sessionID: string, model: any, system: any, tools: any, messageCount = 3): any {
@@ -177,5 +192,147 @@ describe("insights tool retry compaction observations", () => {
     for (const secret of ["TOP-SECRET-PATH", "TOP-SECRET-OUTPUT", "TOP-SECRET-ERROR"]) {
       expect(serialized).not.toContain(secret);
     }
+  });
+});
+
+describe("self-reported outcomes", () => {
+  test("validates and replaces only the caller's latest report without accepting arbitrary payloads", async () => {
+    const fake = nativeTree({ root: undefined });
+    await setupInsights(fake.ctx);
+    const tool = fake.tools.get(OUTCOME_TOOL_NAME);
+    expect(tool.options.codemode).toBe(true);
+    expect(tool.input.additionalProperties).toBe(false);
+    expect(tool.input.properties.sessionID).toBeUndefined();
+
+    await outcomeFor(fake, "root", { outcome: "complete", checks: checks(4), artifacts: 2 });
+    expect((await reportFor(fake, "root")).reportedOutcome).toEqual({ outcome: "complete", checks: checks(4), artifacts: 2 });
+    await outcomeFor(fake, "root", { outcome: "partial", checks: checks(2, 1, 0, 1), blocker: "tooling", artifacts: 1 });
+    expect((await reportFor(fake, "root")).reportedOutcome).toEqual({ outcome: "partial", checks: checks(2, 1, 0, 1), blocker: "tooling", artifacts: 1 });
+    await outcomeFor(fake, "root", { outcome: "blocked", checks: checks(1, 0, 1, 2), blocker: "environment", artifacts: 0 });
+    const invalid = [
+      { outcome: "complete", checks: checks(0, 1), artifacts: 0 },
+      { outcome: "complete", checks: checks(0, 0, 1), artifacts: 0 },
+      { outcome: "complete", checks: checks(0, 0, 0, 1), artifacts: 0 },
+      { outcome: "partial", checks: checks(-1), artifacts: 0 },
+      { outcome: "partial", checks: checks(0.5), artifacts: 0 },
+      { outcome: "partial", checks: checks(1), artifacts: Number.MAX_SAFE_INTEGER + 1 },
+      { outcome: "partial", checks: { ...checks(1), note: "SENTINEL-CHECK" }, artifacts: 0 },
+      { outcome: "blocked", checks: checks(0), blocker: "SENTINEL-BLOCKER", artifacts: 0 },
+      { outcome: "partial", checks: checks(1), artifacts: 0, sessionID: "SENTINEL-SELECTOR" },
+    ];
+    for (const input of invalid) await expect(outcomeFor(fake, "root", input)).rejects.toThrow("Invalid self-reported outcome or checks.");
+    const report = await reportFor(fake, "root");
+    expect(report.reportedOutcome).toEqual({ outcome: "blocked", checks: checks(1, 0, 1, 2), blocker: "environment", artifacts: 0 });
+    expect(JSON.stringify(report)).not.toContain("SENTINEL");
+    expect(report.caveat).toContain("self-reported");
+    expect(report.caveat).toContain("not independently verified");
+  });
+
+  test("includes verified descendants only and excludes siblings, unrelated sessions and malformed ancestry", async () => {
+    const parents = { root: undefined, child: "root", grandchild: "child", sibling: "root", outsider: undefined, missing: "gone", cycleA: "cycleB", cycleB: "cycleA" };
+    const fake = nativeTree(parents);
+    fake.getImpl = async ({ sessionID }) => {
+      if (sessionID === "mismatch") return { id: "root", parentID: "root" };
+      if (sessionID === "badParent") return { id: sessionID, parentID: { id: "root" } };
+      if (!(sessionID in parents)) throw new Error("missing");
+      return { id: sessionID, parentID: parents[sessionID as keyof typeof parents] };
+    };
+    await setupInsights(fake.ctx);
+    await outcomeFor(fake, "child", { outcome: "partial", checks: checks(1, 1), artifacts: 2 });
+    await outcomeFor(fake, "grandchild", { outcome: "blocked", checks: checks(2, 0, 1), blocker: "tooling", artifacts: 3 });
+    for (const id of ["sibling", "outsider", "missing", "cycleA", "mismatch", "badParent"]) {
+      await outcomeFor(fake, id, { outcome: "complete", checks: checks(100), artifacts: 100 });
+    }
+    const child = await reportFor(fake, "child");
+    expect(child.reportedOutcome.outcome).toBe("partial");
+    expect(child.descendantSelfReports).toEqual({ reports: 1, outcomes: { complete: 0, partial: 0, blocked: 1 }, checks: checks(2, 0, 1), blockers: { authentication: 0, environment: 0, tooling: 1, authorization: 0, other: 0 }, artifacts: 3 });
+    const root = await reportFor(fake, "root");
+    expect(root.descendantSelfReports.reports).toBe(3);
+    expect(root.descendantSelfReports.checks).toEqual(checks(103, 1, 1));
+    expect((await reportFor(fake, "outsider")).descendantSelfReports.reports).toBe(0);
+    expect(JSON.stringify(child)).not.toContain("grandchild");
+    expect(JSON.stringify(child)).not.toContain("sibling");
+  });
+
+  test("bounds ancestry depth and outcome retention, and clears reports on cleanup", async () => {
+    const fake = makeFake(async ({ sessionID }) => {
+      if (sessionID === "root") return { id: sessionID };
+      if (sessionID.startsWith("deep")) {
+        const index = Number(sessionID.slice(4));
+        return { id: sessionID, parentID: index === 17 ? "root" : `deep${index + 1}` };
+      }
+      return { id: sessionID, parentID: "root" };
+    });
+    const cleanup = await setupInsights(fake.ctx);
+    await outcomeFor(fake, "deep0", { outcome: "blocked", checks: checks(0), blocker: "other", artifacts: 0 });
+    expect((await reportFor(fake, "root")).descendantSelfReports.reports).toBe(0);
+    for (let i = 0; i < 130; i += 1) await outcomeFor(fake, `child${i}`, { outcome: "complete", checks: checks(1), artifacts: 0 });
+    expect((await reportFor(fake, "root")).descendantSelfReports.reports).toBe(128);
+    expect((await reportFor(fake, "child0")).reportedOutcome).toBeNull();
+    expect((await reportFor(fake, "child129")).reportedOutcome.outcome).toBe("complete");
+    await cleanup();
+    await setupInsights(fake.ctx);
+    expect((await reportFor(fake, "root")).descendantSelfReports.reports).toBe(0);
+  });
+
+  test("coalesces repeated blocker advice and re-advises after the threshold clears", async () => {
+    const fake = nativeTree({ root: undefined, a: "root", b: "root", c: "root", outsider: undefined });
+    await setupInsights(fake.ctx);
+    for (const id of ["a", "b", "c", "outsider"]) await outcomeFor(fake, id, { outcome: "blocked", checks: checks(0, 0, 1), blocker: "authentication", artifacts: 0 });
+    const first = contextEvent("root", { providerID: "p", id: "m" }, [], {});
+    fire(fake.sessionHooks, "context", first);
+    expect(first.system).toHaveLength(1);
+    expect(first.system[0].text).toContain("authentication");
+    expect(first.system[0].text).toContain("self-report");
+    expect(first.system[0].text).toContain("no permissions");
+    const second = contextEvent("root", { providerID: "p", id: "m" }, [], {});
+    fire(fake.sessionHooks, "context", second);
+    expect(second.system).toHaveLength(0);
+    const sibling = contextEvent("a", { providerID: "p", id: "m" }, [], {});
+    fire(fake.sessionHooks, "context", sibling);
+    expect(sibling.system).toHaveLength(0);
+    await outcomeFor(fake, "c", { outcome: "complete", checks: checks(1), artifacts: 0 });
+    const below = contextEvent("root", { providerID: "p", id: "m" }, [], {});
+    fire(fake.sessionHooks, "context", below);
+    expect(below.system).toHaveLength(0);
+    await outcomeFor(fake, "c", { outcome: "blocked", checks: checks(0), blocker: "authentication", artifacts: 0 });
+    const again = contextEvent("root", { providerID: "p", id: "m" }, [], {});
+    fire(fake.sessionHooks, "context", again);
+    expect(again.system).toHaveLength(1);
+  });
+
+  test("limits pending native lookups and cleanup releases callers even when the transport never settles", async () => {
+    let nativeCalls = 0;
+    const fake = makeFake(async () => { nativeCalls += 1; return new Promise(() => {}); });
+    const cleanup = await setupInsights(fake.ctx);
+    const requests = Array.from({ length: 20 }, (_, i) => outcomeFor(fake, `child${i}`, { outcome: "partial", checks: checks(0), artifacts: 0 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(nativeCalls).toBe(16);
+    await cleanup();
+    await Promise.all(requests);
+    expect(nativeCalls).toBe(16);
+  });
+
+  test("a late ancestry lookup cannot overwrite a newer self-report", async () => {
+    let finishFirst!: (value: unknown) => void;
+    let first = true;
+    const fake = makeFake(async ({ sessionID }) => {
+      if (sessionID === "child" && first) {
+        first = false;
+        return new Promise((resolve) => { finishFirst = resolve; });
+      }
+      return sessionID === "root" ? { id: "root" } : { id: sessionID, parentID: "root" };
+    });
+    await setupInsights(fake.ctx);
+    const older = outcomeFor(fake, "child", { outcome: "blocked", checks: checks(0), blocker: "environment", artifacts: 0 });
+    await Promise.resolve();
+    await outcomeFor(fake, "child", { outcome: "complete", checks: checks(3), artifacts: 1 });
+    finishFirst({ id: "child", parentID: "root" });
+    await older;
+    expect((await reportFor(fake, "child")).reportedOutcome).toEqual({ outcome: "complete", checks: checks(3), artifacts: 1 });
+    const root = await reportFor(fake, "root");
+    expect(root.descendantSelfReports.outcomes).toEqual({ complete: 1, partial: 0, blocked: 0 });
+    expect(root.descendantSelfReports.blockers.environment).toBe(0);
   });
 });

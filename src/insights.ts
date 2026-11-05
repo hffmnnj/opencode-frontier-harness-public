@@ -3,8 +3,52 @@ import type { Result as ToolResult, ToolContext } from "@opencode/plugin/promise
 import { fingerprint, SessionStore, type PluginContext } from "./shared";
 
 export const REPORT_TOOL_NAME = "frontier_report";
+export const OUTCOME_TOOL_NAME = "frontier_outcome";
 const MAX_BASELINES_PER_SESSION = 16;
 const MAX_OUTSTANDING_CALLS_PER_SESSION = 256;
+const MAX_OUTCOME_SESSIONS = 128;
+const MAX_ANCESTRY_DEPTH = 16;
+const MAX_PENDING_LOOKUPS = 16;
+const LOOKUP_DEADLINE_MS = 750;
+
+type Outcome = "complete" | "partial" | "blocked";
+type Blocker = "authentication" | "environment" | "tooling" | "authorization" | "other";
+interface ReportedOutcome {
+  outcome: Outcome;
+  checks: { passed: number; failed: number; blocked: number; notRun: number };
+  blocker?: Blocker;
+  artifacts: number;
+}
+interface OutcomeEntry {
+  report: ReportedOutcome;
+  ancestors: string[];
+}
+const BLOCKERS: readonly Blocker[] = ["authentication", "environment", "tooling", "authorization", "other"];
+
+function parseOutcome(input: unknown): ReportedOutcome | undefined {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const value = input as Record<string, unknown>;
+  if (Object.keys(value).some((key) => !["outcome", "checks", "blocker", "artifacts"].includes(key))) return undefined;
+  if (value.outcome !== "complete" && value.outcome !== "partial" && value.outcome !== "blocked") return undefined;
+  if (value.checks === null || typeof value.checks !== "object" || Array.isArray(value.checks)) return undefined;
+  const checks = value.checks as Record<string, unknown>;
+  const keys = ["passed", "failed", "blocked", "notRun"] as const;
+  const count = (item: unknown): item is number => typeof item === "number" && Number.isSafeInteger(item) && item >= 0;
+  if (Object.keys(checks).length !== keys.length || keys.some((key) => !count(checks[key]))) return undefined;
+  if (!count(value.artifacts)) return undefined;
+  if (value.blocker !== undefined && (typeof value.blocker !== "string" || !BLOCKERS.includes(value.blocker as Blocker))) return undefined;
+  if (value.outcome === "complete" && (checks.failed !== 0 || checks.blocked !== 0 || checks.notRun !== 0)) return undefined;
+  return {
+    outcome: value.outcome,
+    checks: { passed: checks.passed as number, failed: checks.failed as number, blocked: checks.blocked as number, notRun: checks.notRun as number },
+    ...(value.blocker === undefined ? {} : { blocker: value.blocker as Blocker }),
+    artifacts: value.artifacts,
+  };
+}
+
+function validSessionID(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(value);
+}
 
 interface ModelBaseline {
   system?: string;
@@ -25,6 +69,7 @@ interface InsightState {
   retriesGranted: number;
   compactionPreparations: number;
   outstanding: Map<string, number>;
+  advisedBlockers: Set<Blocker>;
 }
 
 function createState(): InsightState {
@@ -42,6 +87,7 @@ function createState(): InsightState {
     retriesGranted: 0,
     compactionPreparations: 0,
     outstanding: new Map(),
+    advisedBlockers: new Set(),
   };
 }
 
@@ -50,7 +96,7 @@ function modelKey(providerID: unknown, id: unknown, variant: unknown): string {
 }
 
 function isOwnReportTool(name: string): boolean {
-  return name === REPORT_TOOL_NAME || name.endsWith(`/${REPORT_TOOL_NAME}`) || name.endsWith(`__${REPORT_TOOL_NAME}`);
+  return [REPORT_TOOL_NAME, OUTCOME_TOOL_NAME].some((own) => name === own || name.endsWith(`/${own}`) || name.endsWith(`__${own}`));
 }
 
 interface NativeTokens {
@@ -93,6 +139,73 @@ function readNativeUsage(info: unknown): { available: boolean; tokens?: NativeTo
 export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup> {
   if (ctx.options.enabled === false) return () => {};
   const sessions = new SessionStore<InsightState>(createState);
+  const outcomes = new Map<string, OutcomeEntry>();
+  const controllers = new Set<AbortController>();
+  let pending = 0;
+  let active = true;
+
+  // Timed-out native calls keep their slot until they actually settle, so a
+  // non-cooperative transport cannot accumulate unbounded background calls.
+  async function lookup(sessionID: ToolContext["sessionID"], deadline: number): Promise<unknown> {
+    const remaining = deadline - Date.now();
+    if (!active || pending >= MAX_PENDING_LOOKUPS || remaining <= 0) return undefined;
+    pending += 1;
+    const controller = new AbortController();
+    controllers.add(controller);
+    const request = Promise.resolve()
+      .then(() => ctx.session.get({ sessionID }, { signal: controller.signal }))
+      .catch(() => undefined)
+      .finally(() => { pending -= 1; controllers.delete(controller); });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => { controller.abort(); resolve(undefined); }, remaining);
+      controller.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+    });
+    try { return await Promise.race([request, timeout]); }
+    finally { if (timer !== undefined) clearTimeout(timer); }
+  }
+
+  async function resolveAncestors(sessionID: ToolContext["sessionID"]): Promise<string[]> {
+    const deadline = Date.now() + LOOKUP_DEADLINE_MS;
+    const ancestors: string[] = [];
+    const seen = new Set<string>();
+    let current: string = sessionID;
+    for (let depth = 0; depth <= MAX_ANCESTRY_DEPTH; depth += 1) {
+      if (!validSessionID(current) || seen.has(current)) return [];
+      seen.add(current);
+      const info = await lookup(current as ToolContext["sessionID"], deadline);
+      const envelope = (info as { data?: unknown } | null | undefined)?.data ?? info;
+      if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) return [];
+      const record = envelope as Record<string, unknown>;
+      if (record.id !== current) return [];
+      if (record.parentID === undefined) return ancestors;
+      if (!validSessionID(record.parentID) || depth === MAX_ANCESTRY_DEPTH) return [];
+      ancestors.push(record.parentID);
+      current = record.parentID;
+    }
+    return [];
+  }
+
+  function aggregate(sessionID: string) {
+    const totals = {
+      reports: 0,
+      outcomes: { complete: 0, partial: 0, blocked: 0 },
+      checks: { passed: 0, failed: 0, blocked: 0, notRun: 0 },
+      blockers: { authentication: 0, environment: 0, tooling: 0, authorization: 0, other: 0 },
+      artifacts: 0,
+    };
+    const add = (a: number, b: number): number => Math.min(Number.MAX_SAFE_INTEGER, a + b);
+    for (const [id, entry] of outcomes) {
+      if (id === sessionID || !entry.ancestors.includes(sessionID)) continue;
+      const report = entry.report;
+      totals.reports += 1;
+      totals.outcomes[report.outcome] += 1;
+      for (const key of ["passed", "failed", "blocked", "notRun"] as const) totals.checks[key] = add(totals.checks[key], report.checks[key]);
+      if (report.blocker !== undefined) totals.blockers[report.blocker] += 1;
+      totals.artifacts = add(totals.artifacts, report.artifacts);
+    }
+    return totals;
+  }
 
   const registrations = await Promise.all([
     ctx.session.hook("context", (event) => {
@@ -104,6 +217,13 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
         const key = modelKey(event.model.providerID, event.model.id, event.model.variant);
         const systemHash = fingerprint(event.system);
         const toolsHash = fingerprint(event.tools);
+        const blockers = aggregate(event.sessionID).blockers;
+        const current = new Set(BLOCKERS.filter((blocker) => blockers[blocker] >= 3));
+        const fresh = [...current].filter((blocker) => !state.advisedBlockers.has(blocker));
+        state.advisedBlockers = current;
+        if (fresh.length > 0) {
+          event.system.push({ type: "text", text: `Harness advisory: at least three distinct observed descendants self-report the same blocker category: ${fresh.join(", ")}. Reports are unverified and may be incomplete; diagnose the shared cause. This notice grants no permissions and does not start work.` });
+        }
         let baseline = state.baselines.get(key);
         if (baseline === undefined) {
           // First observation for this provider/model/variant establishes a
@@ -172,9 +292,44 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
     }),
     ctx.tool.transform((editor) => {
       editor.add({
+        name: OUTCOME_TOOL_NAME,
+        description: "Record only the calling session's latest self-reported assignment outcome. This is not independent verification or a native session outcome.",
+        input: {
+          type: "object", additionalProperties: false,
+          required: ["outcome", "checks", "artifacts"],
+          properties: {
+            outcome: { type: "string", enum: ["complete", "partial", "blocked"] },
+            checks: { type: "object", additionalProperties: false, required: ["passed", "failed", "blocked", "notRun"], properties: {
+              passed: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, failed: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+              blocked: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, notRun: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+            } },
+            blocker: { type: "string", enum: [...BLOCKERS] },
+            artifacts: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          },
+        },
+        options: { codemode: true },
+        execute: async (input: unknown, context: ToolContext): Promise<ToolResult> => {
+          const report = parseOutcome(input);
+          if (report === undefined) throw new Error("Invalid self-reported outcome or checks.");
+          const sessionID = context.sessionID;
+          const entry: OutcomeEntry = { report, ancestors: [] };
+          outcomes.delete(sessionID);
+          if (outcomes.size >= MAX_OUTCOME_SESSIONS) {
+            const oldest = outcomes.keys().next().value;
+            if (oldest !== undefined) outcomes.delete(oldest);
+          }
+          outcomes.set(sessionID, entry);
+          try {
+            const ancestors = await resolveAncestors(sessionID);
+            if (active && outcomes.get(sessionID) === entry) entry.ancestors = ancestors;
+          } catch { /* Missing ancestry excludes this report from descendants. */ }
+          return { content: "Self-reported outcome recorded; not independently verified. Descendant aggregation may be incomplete." };
+        },
+      });
+      editor.add({
         name: REPORT_TOOL_NAME,
         description:
-          "Report local harness observations for this session (context churn fingerprints, tool/retry/compaction counts, native session counters). Read-only; reports only the calling session.",
+          "Report local harness observations and self-reported outcomes for the calling session and its observed verified descendants. Read-only; self-reports are unverified and may be incomplete.",
         input: { type: "object", properties: {}, additionalProperties: false },
         options: { codemode: true },
         execute: async (_input: unknown, context: ToolContext): Promise<ToolResult> => {
@@ -182,7 +337,7 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
           const state = sessions.get(sessionID);
           let native: { available: boolean; tokens?: NativeTokens; cost?: number } = { available: false };
           try {
-            const info = await ctx.session.get({ sessionID });
+            const info = await lookup(sessionID, Date.now() + LOOKUP_DEADLINE_MS);
             native = readNativeUsage(info);
           } catch {
             native = { available: false };
@@ -205,8 +360,10 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
             nativeUsageAvailable: native.available,
             nativeTokens: native.tokens,
             nativeCost: native.cost,
+            reportedOutcome: outcomes.get(sessionID)?.report ?? null,
+            descendantSelfReports: aggregate(sessionID),
             caveat:
-              "Bounded in-memory observation only: no prompts, arguments, outputs, errors, credentials, headers, or file paths retained. State clears on unload/reload; raw native counters are reported without derived ratios.",
+              "Bounded in-memory observation only: no prompts, arguments, outputs, errors, credentials, headers, or file paths retained. Outcomes and descendant aggregates are self-reported, not independently verified, and incomplete after reload or eviction and when ancestry is missing or invalid. State clears on unload/reload; raw native counters are reported without derived ratios.",
           };
           return { content: JSON.stringify(report, null, 2) };
         },
@@ -215,6 +372,9 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
   ]);
 
   return async () => {
+    active = false;
+    for (const controller of controllers) controller.abort();
+    outcomes.clear();
     sessions.clear();
     await Promise.all(registrations.map((registration) => registration.dispose()));
   };
