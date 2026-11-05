@@ -194,4 +194,183 @@ describe("loop-guard plugin", () => {
     expect(hooks.size).toBe(0);
     await cleanup();
   });
+
+  it("loopguard_interleavedIdenticalFailures_stillBlocks", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const failingA = { command: "deploy --check" };
+    for (let i = 0; i < 6; i += 1) {
+      const a = failedEvents("ses_main", "bash", failingA, "connection refused");
+      call(hooks, "tool:execute.before", a.before);
+      call(hooks, "tool:execute.after", a.after);
+      if (i < 5) {
+        const b = failedEvents("ses_main", "bash", { command: `status-${i}` }, `other failure ${i}`);
+        call(hooks, "tool:execute.before", b.before);
+        call(hooks, "tool:execute.after", b.after);
+      }
+    }
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", failingA))).toThrow(ToolError);
+    expect(() =>
+      call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", { command: "status-fresh" })),
+    ).not.toThrow();
+  });
+
+  it("loopguard_changedResultOrSuccess_clearsFailureHistory", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const input = { command: "deploy --check" };
+    failNTimes(hooks, 5, "ses_main", "bash", input, "connection refused");
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", input))).not.toThrow();
+
+    const changed = failedEvents("ses_main", "bash", input, "tls handshake timeout");
+    call(hooks, "tool:execute.before", changed.before);
+    call(hooks, "tool:execute.after", changed.after);
+    expect(guidance(hooks, "ses_main")).toEqual([]);
+
+    failNTimes(hooks, 5, "ses_main", "bash", input, "connection refused");
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", input))).not.toThrow();
+
+    const ok = completedEvents("ses_main", "bash", input, "healthy");
+    call(hooks, "tool:execute.before", ok.before);
+    call(hooks, "tool:execute.after", ok.after);
+    failNTimes(hooks, 5, "ses_main", "bash", input, "connection refused");
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", input))).not.toThrow();
+  });
+
+  it("loopguard_exactEditNoop_rejectedWithoutRawLeak", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const sentinel = "sk_live_SENTINEL_noop_4X";
+    const input = { filePath: `/srv/app/${sentinel}.ts`, oldString: `secret ${sentinel}`, newString: `secret ${sentinel}` };
+    let thrown: unknown;
+    try {
+      call(hooks, "tool:execute.before", beforeEvent("ses_main", "edit", input));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ToolError);
+    expect(String((thrown as Error).message)).toContain("identical");
+    expect(String((thrown as Error).message)).not.toContain(sentinel);
+
+    failNTimes(hooks, 2, "ses_main", "bash", { command: "deploy --check" }, "connection refused");
+    expect(guidance(hooks, "ses_main")).toEqual([]);
+  });
+
+  it("loopguard_similarToolName_notTreatedAsNativeEdit", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const input = { oldString: "same", newString: "same" };
+    const events = failedEvents("ses_main", "my-edit", input, "boom");
+    expect(() => call(hooks, "tool:execute.before", events.before)).not.toThrow();
+    call(hooks, "tool:execute.after", events.after);
+    expect(guidance(hooks, "ses_main")).toEqual([]);
+  });
+
+  it("loopguard_exactMismatch_advisesRereadOnce", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const input = { filePath: "/srv/app/a.ts", oldString: "aaa", newString: "bbb" };
+    const { before, after } = failedEvents("ses_main", "edit", input, "oldString not found in content");
+    call(hooks, "tool:execute.before", before);
+    call(hooks, "tool:execute.after", after);
+
+    const first = guidance(hooks, "ses_main");
+    expect(first.join("\n")).toMatch(/reread/i);
+    expect(first.join("\n")).toContain("current hunk");
+    expect(first.join("\n")).toContain("no additional permissions");
+    expect(first.join("\n")).not.toContain("/srv/app/a.ts");
+    const second = guidance(hooks, "ses_main");
+    expect(second).toEqual([]);
+  });
+
+  it("loopguard_changedMismatch_warnsWithoutDemandingRead", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const input = { filePath: "/srv/app/a.ts", oldString: "aaa", newString: "bbb" };
+    const { before, after } = failedEvents(
+      "ses_main",
+      "edit",
+      input,
+      "Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match.",
+    );
+    call(hooks, "tool:execute.before", before);
+    call(hooks, "tool:execute.after", after);
+
+    const texts = guidance(hooks, "ses_main");
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("ambiguous or malformed");
+    expect(texts[0]).not.toMatch(/reread/i);
+  });
+
+  it("loopguard_patchMismatch_advisesCurrentHunk", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const input = { patchText: "*** Begin Patch\n*** End Patch" };
+    const { before, after } = failedEvents("ses_main", "patch", input, "Failed to apply update to /srv/app/a.ts: context mismatch");
+    call(hooks, "tool:execute.before", before);
+    call(hooks, "tool:execute.after", after);
+    const texts = guidance(hooks, "ses_main");
+    expect(texts.join("\n")).toContain("current hunk");
+    expect(texts.join("\n")).not.toContain("/srv/app/a.ts");
+  });
+
+  it("loopguard_repeatedNudge_emittedOncePerEpisode", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    failNTimes(hooks, 3, "ses_main");
+    expect(guidance(hooks, "ses_main")).toHaveLength(1);
+    expect(guidance(hooks, "ses_main")).toEqual([]);
+  });
+
+  it("loopguard_interleavedNudge_emittedOnceAcrossUnrelatedCalls", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const failingA = { command: "deploy --check" };
+    for (let i = 0; i < 3; i += 1) {
+      const a = failedEvents("ses_main", "bash", failingA, "connection refused");
+      call(hooks, "tool:execute.before", a.before);
+      call(hooks, "tool:execute.after", a.after);
+      if (i < 2) {
+        const b = failedEvents("ses_main", "bash", { command: `status-${i}` }, `other failure ${i}`);
+        call(hooks, "tool:execute.before", b.before);
+        call(hooks, "tool:execute.after", b.after);
+      }
+    }
+    const first = guidance(hooks, "ses_main");
+    expect(first).toHaveLength(1);
+    expect(first[0]).toContain("same failure");
+    expect(guidance(hooks, "ses_main")).toEqual([]);
+  });
+
+  it("loopguard_oldFailureExpiresAfterWindowOfOtherObservations", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const target = { command: "deploy --check" };
+    failNTimes(hooks, 3, "ses_main", "bash", target, "connection refused");
+    expect(guidance(hooks, "ses_main")).toHaveLength(1);
+
+    for (let i = 0; i < 16; i += 1) {
+      const probe = completedEvents("ses_main", "read", { file: `file-${i}.txt` }, `content-${i}`);
+      call(hooks, "tool:execute.before", probe.before);
+      call(hooks, "tool:execute.after", probe.after);
+    }
+    expect(guidance(hooks, "ses_main")).toEqual([]);
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", target))).not.toThrow();
+  });
+
+  it("loopguard_historyBoundedAndCleanupClears", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const target = { command: "deploy --check" };
+    failNTimes(hooks, 6, "ses_main", "bash", target, "connection refused");
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", target))).toThrow(ToolError);
+
+    for (let i = 0; i < 16; i += 1) {
+      failNTimes(hooks, 1, "ses_main", "bash", { command: `probe-${i}` }, `failure-${i}`);
+    }
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", target))).not.toThrow();
+
+    const cleanup = await setupLoopGuard(ctx);
+    await cleanup();
+  });
 });
