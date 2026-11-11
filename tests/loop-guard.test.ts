@@ -4,6 +4,7 @@ import { setupLoopGuard } from "../src/loop-guard";
 import type { PluginContext } from "../src/shared";
 
 const AGENT = "build";
+const emitted = new WeakMap<Map<string, (event: any) => unknown>, Map<string, string[]>>();
 
 function makeHarness(options: Record<string, unknown> = {}) {
   const hooks = new Map<string, (event: any) => unknown>();
@@ -28,7 +29,22 @@ function makeHarness(options: Record<string, unknown> = {}) {
 function call(hooks: Map<string, (event: any) => unknown>, name: string, event: any): unknown {
   const handler = hooks.get(name);
   if (handler === undefined) throw new Error(`hook ${name} was not registered`);
-  return handler(event);
+  const originalMessage = event.status === "error" ? event.error.message : undefined;
+  const result = handler(event);
+  if (name === "tool:execute.after") {
+    const text = event.status === "error"
+      ? event.error.message.slice(originalMessage.length)
+      : Array.isArray(event.result.content)
+        ? event.result.content.map((part: any) => part.type === "text" ? part.text : "").join("\n")
+        : "";
+    const notices = text.split(/\n+/).filter((part: string) => part.startsWith("Harness observation:"));
+    if (notices.length > 0) {
+      const sessions = emitted.get(hooks) ?? new Map<string, string[]>();
+      sessions.set(event.sessionID, [...(sessions.get(event.sessionID) ?? []), ...notices]);
+      emitted.set(hooks, sessions);
+    }
+  }
+  return result;
 }
 
 let callSeq = 0;
@@ -62,9 +78,10 @@ function failNTimes(
 }
 
 function guidance(hooks: Map<string, (event: any) => unknown>, sessionID: string): Array<string> {
-  const event: any = { sessionID, system: [] };
-  call(hooks, "session:context", event);
-  return event.system.map((part: any) => String(part.text));
+  const sessions = emitted.get(hooks);
+  const notices = sessions?.get(sessionID) ?? [];
+  sessions?.delete(sessionID);
+  return notices;
 }
 
 describe("loop-guard plugin", () => {
@@ -72,7 +89,6 @@ describe("loop-guard plugin", () => {
     const { ctx, hooks } = makeHarness();
     await setupLoopGuard(ctx);
     expect([...hooks.keys()].sort()).toEqual([
-      "session:context",
       "session:prompt",
       "tool:execute.after",
       "tool:execute.before",
@@ -220,6 +236,7 @@ describe("loop-guard plugin", () => {
     await setupLoopGuard(ctx);
     const input = { command: "deploy --check" };
     failNTimes(hooks, 5, "ses_main", "bash", input, "connection refused");
+    expect(guidance(hooks, "ses_main")).toHaveLength(1);
     expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", input))).not.toThrow();
 
     const changed = failedEvents("ses_main", "bash", input, "tls handshake timeout");
@@ -320,6 +337,80 @@ describe("loop-guard plugin", () => {
     failNTimes(hooks, 3, "ses_main");
     expect(guidance(hooks, "ses_main")).toHaveLength(1);
     expect(guidance(hooks, "ses_main")).toEqual([]);
+  });
+
+  it("loopguard_advisoryStaysInTriggeringErrorWithoutChangingSystemOrGuard", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const input = { command: "deploy --check" };
+    const cause = new Error("underlying failure");
+    const metadata = { code: "ECONNREFUSED" };
+    const transcript: string[] = [];
+    const system = [{ type: "text", text: "stable system prefix" }];
+
+    for (let i = 0; i < 6; i += 1) {
+      const { before, after } = failedEvents("ses_main", "bash", input, "connection refused");
+      after.error = new ToolError({ message: "connection refused", error: cause, metadata });
+      call(hooks, "tool:execute.before", before);
+      call(hooks, "tool:execute.after", after);
+      expect(after.error).toBeInstanceOf(ToolError);
+      expect(after.error.error).toBe(cause);
+      expect(after.error.metadata).toEqual(metadata);
+      expect(after.error.message.startsWith("connection refused")).toBe(true);
+      transcript.push(after.error.message);
+      expect(system).toEqual([{ type: "text", text: "stable system prefix" }]);
+    }
+    expect(hooks.has("session:context")).toBe(false);
+    expect(transcript.filter((message) => message.includes("Harness observation:"))).toHaveLength(1);
+    expect(transcript[2]).toContain("same failure");
+    expect(transcript[3]).toBe("connection refused");
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_main", "bash", input))).toThrow(ToolError);
+  });
+
+  it("loopguard_successAdvice_preservesHostContentFallbackAndStructuredResult", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const output = { progress: 42, state: "running" };
+    const metadata = { source: "worker" };
+    for (let i = 0; i < 4; i += 1) {
+      const { before, after } = completedEvents("ses_poll", "job-status", { job: "nightly" }, output);
+      after.result = { output, metadata };
+      call(hooks, "tool:execute.before", before);
+      call(hooks, "tool:execute.after", after);
+      expect(after.result.output).toBe(output);
+      expect(after.result.metadata).toBe(metadata);
+      if (i === 2) {
+        expect(after.result.content).toEqual([
+          { type: "text", text: '{"progress":42,"state":"running"}' },
+          { type: "text", text: expect.stringContaining("Successful calls remain available") },
+        ]);
+      } else {
+        expect(after.result.content).toBeUndefined();
+      }
+    }
+    expect(() => call(hooks, "tool:execute.before", beforeEvent("ses_poll", "job-status", { job: "nightly" }))).not.toThrow();
+  });
+
+  it("loopguard_successAdvice_preservesStringArrayAndEmptyContent", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const variants = [
+      { content: "original", expected: [{ type: "text", text: "original" }] },
+      { content: [{ type: "file", uri: "file:///image.png", mime: "image/png" }], expected: [{ type: "file", uri: "file:///image.png", mime: "image/png" }] },
+      { content: [], expected: [{ type: "text", text: "fallback" }] },
+    ];
+    for (const [index, variant] of variants.entries()) {
+      for (let i = 0; i < 3; i += 1) {
+        const { before, after } = completedEvents(`ses_${index}`, "poll", {}, "fallback");
+        after.result = { content: variant.content, output: "fallback" };
+        call(hooks, "tool:execute.before", before);
+        call(hooks, "tool:execute.after", after);
+        if (i === 2) expect(after.result.content).toEqual([
+          ...variant.expected,
+          { type: "text", text: expect.stringContaining("Successful calls remain available") },
+        ]);
+      }
+    }
   });
 
   it("loopguard_interleavedNudge_emittedOnceAcrossUnrelatedCalls", async () => {
