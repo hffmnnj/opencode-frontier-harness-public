@@ -73,11 +73,12 @@ function readOldNew(input: unknown): { oldString: unknown; newString: unknown } 
  * the other branch covers ambiguous or malformed inputs. Returns null for
  * unrelated tools and unrelated errors.
  */
-function classifyMismatch(tool: unknown, message: unknown): MismatchKind | null {
+export function classifyMismatch(tool: unknown, message: unknown): MismatchKind | null {
   if (tool !== "edit" && tool !== "patch") return null;
   if (typeof message !== "string") return null;
   const text = message.toLowerCase();
   if (
+    (tool === "edit" && /could not find oldstring in [^\r\n]+(?:\r?\n\s*)*it must match exactly/.test(text)) ||
     text.includes("oldstring not found in content") ||
     text.includes("failed to apply update to") ||
     text.includes("failed to find expected lines") ||

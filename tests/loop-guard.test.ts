@@ -283,6 +283,28 @@ describe("loop-guard plugin", () => {
     expect(second).toEqual([]);
   });
 
+  it("loopguard_nativeOldStringError_advisesOnlyForEditAndExactSignature", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const input = { filePath: "/secret/project.ts", oldString: "before", newString: "after" };
+    const message = "Could not find oldString in /secret/project.ts. It must match exactly";
+    failNTimes(hooks, 1, "edit-match", "edit", input, message);
+    const advice = guidance(hooks, "edit-match");
+    expect(advice).toHaveLength(1);
+    expect(advice[0]).toContain("reread");
+    expect(advice[0]).not.toContain("/secret/project.ts");
+
+    for (const [session, tool, error] of [
+      ["patch", "patch", message],
+      ["other", "my-edit", message],
+      ["missing-tail", "edit", "Could not find oldString in /secret/project.ts"],
+      ["different-error", "edit", "Could not find newString in /secret/project.ts. It must match exactly"],
+    ]) {
+      failNTimes(hooks, 1, session!, tool!, input, error!);
+      expect(guidance(hooks, session!)).toEqual([]);
+    }
+  });
+
   it("loopguard_changedMismatch_warnsWithoutDemandingRead", async () => {
     const { ctx, hooks } = makeHarness();
     await setupLoopGuard(ctx);

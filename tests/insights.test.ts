@@ -193,6 +193,44 @@ describe("insights tool retry compaction observations", () => {
       expect(serialized).not.toContain(secret);
     }
   });
+
+  test("groups bounded tool observations and error classes without retaining payloads, then clears on reload", async () => {
+    const fake = makeFake();
+    const cleanup = await setupInsights(fake.ctx);
+    const secret = "SENTINEL-PRIVATE-PATH-AND-ERROR";
+    const observe = (id: string, tool: string, error?: { message: string; metadata?: object }, before = true) => {
+      const event = { id, tool, sessionID: "ses-a", input: { path: secret } };
+      if (before) fire(fake.toolHooks, "execute.before", event);
+      fire(fake.toolHooks, "execute.after", error === undefined
+        ? { ...event, status: "completed", result: { content: secret } }
+        : { ...event, status: "error", error });
+    };
+    observe("1", "read");
+    observe("2", "read");
+    observe("3", "edit", { message: `Could not find oldString in ${secret}. It must match exactly` });
+    observe("4", "edit", { message: "multiple matches for oldString" }, false);
+    observe("5", "edit", { message: secret, metadata: { frontierLoopGuard: true } });
+    for (let i = 0; i < 40; i += 1) observe(`unknown-${i}`, `${secret}-${i}`, { message: secret });
+    observe("own", REPORT_TOOL_NAME);
+
+    const report = await reportFor(fake, "ses-a");
+    expect(Object.keys(report.toolObservations).sort()).toEqual(["edit", "other", "read"]);
+    expect(report.toolObservations.read).toMatchObject({ completed: 2, timedCalls: 2, errors: { exactMismatch: 0, ambiguousMismatch: 0, loopGuard: 0, other: 0 } });
+    expect(report.toolObservations.edit).toMatchObject({ completed: 0, timedCalls: 2, errors: { exactMismatch: 1, ambiguousMismatch: 1, loopGuard: 1, other: 0 } });
+    expect(report.toolObservations.other).toMatchObject({ completed: 0, timedCalls: 40, errors: { exactMismatch: 0, ambiguousMismatch: 0, loopGuard: 0, other: 40 } });
+    expect(report.toolObservations.read.millisTotal).toBeGreaterThanOrEqual(0);
+    expect(report.toolObservations.edit.millisTotal).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(report)).not.toContain(secret);
+    expect(report.caveat).toContain("not model or queue time");
+    expect(report.caveat).toContain("not independently verified");
+
+    await cleanup();
+    await setupInsights(fake.ctx);
+    const afterReload = await reportFor(fake, "ses-a");
+    expect(afterReload.toolObservations).toEqual({});
+    expect(afterReload.completedTools).toBe(0);
+    expect(afterReload.errorTools).toBe(0);
+  });
 });
 
 describe("self-reported outcomes", () => {

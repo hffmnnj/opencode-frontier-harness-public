@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin";
 import type { Result as ToolResult, ToolContext } from "@opencode/plugin/promise/tool";
+import { classifyMismatch } from "./loop-guard";
 import { fingerprint, SessionStore, type PluginContext } from "./shared";
 
 export const REPORT_TOOL_NAME = "frontier_report";
@@ -10,6 +11,24 @@ const MAX_OUTCOME_SESSIONS = 128;
 const MAX_ANCESTRY_DEPTH = 16;
 const MAX_PENDING_LOOKUPS = 16;
 const LOOKUP_DEADLINE_MS = 750;
+const TOOL_GROUPS = ["read", "edit", "patch", "write", "bash", "shell", "grep", "glob", "task", "question", "execute"] as const;
+type ToolGroup = typeof TOOL_GROUPS[number] | "other";
+type ErrorClass = "exactMismatch" | "ambiguousMismatch" | "loopGuard" | "other";
+
+interface ToolMetrics {
+  completed: number;
+  errors: Record<ErrorClass, number>;
+  timedCalls: number;
+  millisTotal: number;
+}
+
+function toolGroup(name: string): ToolGroup {
+  return (TOOL_GROUPS as readonly string[]).includes(name) ? name as ToolGroup : "other";
+}
+
+function newToolMetrics(): ToolMetrics {
+  return { completed: 0, errors: { exactMismatch: 0, ambiguousMismatch: 0, loopGuard: 0, other: 0 }, timedCalls: 0, millisTotal: 0 };
+}
 
 type Outcome = "complete" | "partial" | "blocked";
 type Blocker = "authentication" | "environment" | "tooling" | "authorization" | "other";
@@ -65,6 +84,7 @@ interface InsightState {
   completedTools: number;
   errorTools: number;
   toolMillisTotal: number;
+  tools: Map<ToolGroup, ToolMetrics>;
   retryDecisions: number;
   retriesGranted: number;
   compactionPreparations: number;
@@ -83,6 +103,7 @@ function createState(): InsightState {
     completedTools: 0,
     errorTools: 0,
     toolMillisTotal: 0,
+    tools: new Map(),
     retryDecisions: 0,
     retriesGranted: 0,
     compactionPreparations: 0,
@@ -260,14 +281,32 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
       try {
         if (isOwnReportTool(event.tool)) return;
         const state = sessions.get(event.sessionID);
+        const group = toolGroup(event.tool);
+        let metrics = state.tools.get(group);
+        if (metrics === undefined) {
+          metrics = newToolMetrics();
+          state.tools.set(group, metrics);
+        }
         const started = state.outstanding.get(event.id);
         if (started !== undefined) {
           state.outstanding.delete(event.id);
           const elapsed = performance.now() - started;
-          if (Number.isFinite(elapsed) && elapsed >= 0) state.toolMillisTotal += elapsed;
+          if (Number.isFinite(elapsed) && elapsed >= 0) {
+            state.toolMillisTotal += elapsed;
+            metrics.timedCalls += 1;
+            metrics.millisTotal += elapsed;
+          }
         }
-        if (event.status === "completed") state.completedTools += 1;
-        else state.errorTools += 1;
+        if (event.status === "completed") {
+          state.completedTools += 1;
+          metrics.completed += 1;
+        } else {
+          state.errorTools += 1;
+          const mismatch = classifyMismatch(event.tool, event.error.message);
+          const kind: ErrorClass = event.error.metadata?.frontierLoopGuard === true ? "loopGuard"
+            : mismatch === "exact" ? "exactMismatch" : mismatch === "changed" ? "ambiguousMismatch" : "other";
+          metrics.errors[kind] += 1;
+        }
       } catch {
         // Fail open: observation only.
       }
@@ -354,6 +393,10 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
             completedTools: state.completedTools,
             errorTools: state.errorTools,
             toolMillisTotal: Math.round(state.toolMillisTotal * 100) / 100,
+            toolObservations: Object.fromEntries([...state.tools].map(([tool, metrics]) => [tool, {
+              ...metrics,
+              millisTotal: Math.round(metrics.millisTotal * 100) / 100,
+            }])),
             retryDecisions: state.retryDecisions,
             retriesGranted: state.retriesGranted,
             compactionPreparations: state.compactionPreparations,
@@ -363,7 +406,7 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
             reportedOutcome: outcomes.get(sessionID)?.report ?? null,
             descendantSelfReports: aggregate(sessionID),
             caveat:
-              "Bounded in-memory observation only: no prompts, arguments, outputs, errors, credentials, headers, or file paths retained. Outcomes and descendant aggregates are self-reported, not independently verified, and incomplete after reload or eviction and when ancestry is missing or invalid. State clears on unload/reload; raw native counters are reported without derived ratios.",
+              "Bounded in-memory observation only: no prompts, arguments, outputs, error content, credentials, headers, or file paths retained. Tool timings span observed before/after hooks, not model or queue time; missing starts are not timed, and unknown tool names are grouped as other. Outcomes and descendant aggregates are self-reported, not independently verified, and incomplete after reload or eviction and when ancestry is missing or invalid. State clears on unload/reload; raw native counters are reported without derived ratios.",
           };
           return { content: JSON.stringify(report, null, 2) };
         },
