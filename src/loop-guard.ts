@@ -77,8 +77,11 @@ export function classifyMismatch(tool: unknown, message: unknown): MismatchKind 
   if (tool !== "edit" && tool !== "patch") return null;
   if (typeof message !== "string") return null;
   const text = message.toLowerCase();
+  const nativeEditPrefix = "could not find oldstring in ";
+  const nativeEditSuffix = ". it must match exactly, including whitespace and indentation.";
   if (
-    (tool === "edit" && /could not find oldstring in [^\r\n]+(?:\r?\n\s*)*it must match exactly/.test(text)) ||
+    (tool === "edit" && text.startsWith(nativeEditPrefix) && text.endsWith(nativeEditSuffix) &&
+      text.length > nativeEditPrefix.length + nativeEditSuffix.length && !text.includes("\n") && !text.includes("\r")) ||
     text.includes("oldstring not found in content") ||
     text.includes("failed to apply update to") ||
     text.includes("failed to find expected lines") ||
@@ -88,6 +91,7 @@ export function classifyMismatch(tool: unknown, message: unknown): MismatchKind 
     return "exact";
   }
   if (
+    (tool === "edit" && /^found [0-9]+ matches for oldstring, but expected exactly one\. add more surrounding context/.test(text)) ||
     text.includes("multiple matches for oldstring") ||
     text.includes("failed to parse patch") ||
     text.includes("no file changes found in patch")

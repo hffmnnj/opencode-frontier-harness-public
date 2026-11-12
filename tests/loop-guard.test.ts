@@ -287,7 +287,7 @@ describe("loop-guard plugin", () => {
     const { ctx, hooks } = makeHarness();
     await setupLoopGuard(ctx);
     const input = { filePath: "/secret/project.ts", oldString: "before", newString: "after" };
-    const message = "Could not find oldString in /secret/project.ts. It must match exactly";
+    const message = "Could not find oldString in /secret/project.ts. It must match exactly, including whitespace and indentation.";
     failNTimes(hooks, 1, "edit-match", "edit", input, message);
     const advice = guidance(hooks, "edit-match");
     expect(advice).toHaveLength(1);
@@ -298,7 +298,29 @@ describe("loop-guard plugin", () => {
       ["patch", "patch", message],
       ["other", "my-edit", message],
       ["missing-tail", "edit", "Could not find oldString in /secret/project.ts"],
-      ["different-error", "edit", "Could not find newString in /secret/project.ts. It must match exactly"],
+      ["different-error", "edit", "Could not find newString in /secret/project.ts. It must match exactly, including whitespace and indentation."],
+      ["multiline", "edit", `Could not find oldString in /secret/project.ts${"\n ".repeat(2000)}. It must match exactly, including whitespace and indentation.`],
+    ]) {
+      failNTimes(hooks, 1, session!, tool!, input, error!);
+      expect(guidance(hooks, session!)).toEqual([]);
+    }
+  });
+
+  it("loopguard_nativeMultipleMatches_advisesOnlyForEditAndExactSignature", async () => {
+    const { ctx, hooks } = makeHarness();
+    await setupLoopGuard(ctx);
+    const input = { filePath: "/secret/project.ts", oldString: "before", newString: "after" };
+    const message = "Found 2 matches for oldString, but expected exactly one. Add more surrounding context";
+    failNTimes(hooks, 1, "native-matches", "edit", input, message);
+    const advice = guidance(hooks, "native-matches");
+    expect(advice).toHaveLength(1);
+    expect(advice[0]).toContain("ambiguous or malformed");
+    expect(advice[0]).not.toMatch(/reread/i);
+    for (const [session, tool, error] of [
+      ["patch-matches", "patch", message],
+      ["other-matches", "my-edit", message],
+      ["wrong-field", "edit", "Found 2 matches for newString, but expected exactly one. Add more surrounding context"],
+      ["missing-context", "edit", "Found 2 matches for oldString, but expected exactly one."],
     ]) {
       failNTimes(hooks, 1, session!, tool!, input, error!);
       expect(guidance(hooks, session!)).toEqual([]);

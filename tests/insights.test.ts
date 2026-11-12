@@ -194,7 +194,7 @@ describe("insights tool retry compaction observations", () => {
     }
   });
 
-  test("groups bounded tool observations and error classes without retaining payloads, then clears on reload", async () => {
+  test("groups bounded tool observations and error classes without retaining payloads, and cleanup clears the instance", async () => {
     const fake = makeFake();
     const cleanup = await setupInsights(fake.ctx);
     const secret = "SENTINEL-PRIVATE-PATH-AND-ERROR";
@@ -207,8 +207,8 @@ describe("insights tool retry compaction observations", () => {
     };
     observe("1", "read");
     observe("2", "read");
-    observe("3", "edit", { message: `Could not find oldString in ${secret}. It must match exactly` });
-    observe("4", "edit", { message: "multiple matches for oldString" }, false);
+    observe("3", "edit", { message: `Could not find oldString in ${secret}. It must match exactly, including whitespace and indentation.` });
+    observe("4", "edit", { message: "Found 2 matches for oldString, but expected exactly one. Add more surrounding context" }, false);
     observe("5", "edit", { message: secret, metadata: { frontierLoopGuard: true } });
     for (let i = 0; i < 40; i += 1) observe(`unknown-${i}`, `${secret}-${i}`, { message: secret });
     observe("own", REPORT_TOOL_NAME);
@@ -224,12 +224,18 @@ describe("insights tool retry compaction observations", () => {
     expect(report.caveat).toContain("not model or queue time");
     expect(report.caveat).toContain("not independently verified");
 
+    const originalReport = fake.tools.get(REPORT_TOOL_NAME);
     await cleanup();
+    const originalResult = await originalReport.execute({}, { sessionID: "ses-a" });
+    const afterCleanup = JSON.parse(originalResult.content);
+    expect(afterCleanup.toolObservations).toEqual({});
+    expect(afterCleanup.completedTools).toBe(0);
+    expect(afterCleanup.errorTools).toBe(0);
     await setupInsights(fake.ctx);
-    const afterReload = await reportFor(fake, "ses-a");
-    expect(afterReload.toolObservations).toEqual({});
-    expect(afterReload.completedTools).toBe(0);
-    expect(afterReload.errorTools).toBe(0);
+    const newInstance = await reportFor(fake, "ses-a");
+    expect(newInstance.toolObservations).toEqual({});
+    expect(newInstance.completedTools).toBe(0);
+    expect(newInstance.errorTools).toBe(0);
   });
 });
 
