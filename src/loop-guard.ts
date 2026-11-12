@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin";
-import { Error as ToolError } from "@opencode/plugin/promise/tool";
+import { Error as ToolError, type Result as ToolResult } from "@opencode/plugin/promise/tool";
 import { fingerprint, integerOption, SessionStore, type PluginContext } from "./shared";
 
 /** Rolling window over all observed tool executions; unrelated calls expire old failures. */
@@ -27,6 +27,7 @@ interface GuardState {
   streak: Streak;
   recent: RecentEntry[];
   warnedNudge?: string;
+  warnedFailures: Set<string>;
   warnedMismatch?: string;
 }
 
@@ -34,6 +35,7 @@ function createState(): GuardState {
   return {
     streak: { count: 0, failed: false, toolKind: "other", mismatch: null },
     recent: [],
+    warnedFailures: new Set(),
   };
 }
 
@@ -49,6 +51,7 @@ function resetStreak(state: GuardState): void {
 function resetAll(state: GuardState): void {
   resetStreak(state);
   state.recent = [];
+  state.warnedFailures.clear();
   delete state.warnedNudge;
   delete state.warnedMismatch;
 }
@@ -171,6 +174,30 @@ function noopError(): ToolError {
   });
 }
 
+// Match the host's content fallback before appending, including empty arrays.
+function withAdvice(result: ToolResult, advice: string[]): ToolResult {
+  let content = result.content;
+  if (content === undefined || (Array.isArray(content) && content.length === 0)) {
+    let text: string;
+    if (typeof result.output === "string") text = result.output;
+    else {
+      try {
+        text = JSON.stringify(result.output) ?? String(result.output);
+      } catch {
+        text = String(result.output);
+      }
+    }
+    content = [{ type: "text", text }];
+  }
+  return {
+    ...result,
+    content: [
+      ...(typeof content === "string" ? [{ type: "text" as const, text: content }] : content),
+      ...advice.map((text) => ({ type: "text" as const, text })),
+    ],
+  };
+}
+
 export async function setupLoopGuard(ctx: PluginContext): Promise<Plugin.Cleanup> {
   if (ctx.options.enabled === false) return () => {};
   const nudgeAfter = integerOption(ctx.options.nudgeAfter, 3, 2, 20);
@@ -247,10 +274,7 @@ export async function setupLoopGuard(ctx: PluginContext): Promise<Plugin.Cleanup
       // calls (including successes) expire old failures.
       state.recent.push({ call, observation, failed: event.status === "error" });
       while (state.recent.length > MAX_RECENT_OBSERVATIONS) state.recent.shift();
-    }),
-    ctx.session.hook("context", (event) => {
-      const state = sessions.get(event.sessionID);
-      const streak = state.streak;
+      const advice: string[] = [];
 
       // Edit/patch mismatch advice is advisory only. Exact mismatches point at
       // the error's current hunk (or a reread); ambiguous inputs warn without
@@ -265,32 +289,33 @@ export async function setupLoopGuard(ctx: PluginContext): Promise<Plugin.Cleanup
         const key = `${streak.call}:${streak.observation}:${streak.mismatch}`;
         if (state.warnedMismatch !== key) {
           state.warnedMismatch = key;
-          event.system.push({
-            type: "text",
-            text:
-              streak.mismatch === "exact"
-                ? "Harness observation: the previous edit or patch attempt did not match the current file content. Use the error's current hunk where provided, or reread the focused range (edit) or current hunk (patch) before another attempt; do not retry unchanged. This notice grants no additional permissions."
-                : "Harness observation: the previous edit or patch attempt was ambiguous or malformed and did not apply. Review the target and inputs; no change was made. This notice grants no additional permissions.",
-          });
+          advice.push(
+            streak.mismatch === "exact"
+              ? "Harness observation: the previous edit or patch attempt did not match the current file content. Use the error's current hunk where provided, or reread the focused range (edit) or current hunk (patch) before another attempt; do not retry unchanged. This notice grants no additional permissions."
+              : "Harness observation: the previous edit or patch attempt was ambiguous or malformed and did not apply. Review the target and inputs; no change was made. This notice grants no additional permissions.",
+          );
         }
       }
 
       // Repeated-failure nudge covers interleaved repeats from the window and
       // is deduplicated while the same problem episode remains in the window.
       const problem = topWindowFailure(state.recent, nudgeAfter);
-      if (problem !== null) {
-        const key = `fail:${problem.call}:${problem.observation}`;
-        if (state.warnedNudge !== key) {
-          state.warnedNudge = key;
-          event.system.push({
-            type: "text",
-            text: "Harness observation: repeated identical tool calls produced the same failure. Diagnose the cause and change approach; do not retry unchanged. This notice grants no additional permissions.",
-          });
+      for (const key of state.warnedFailures) {
+        const separator = key.indexOf(":");
+        const previous = windowFailure(state.recent, key.slice(0, separator));
+        if (previous === null || previous.count < nudgeAfter || previous.observation !== key.slice(separator + 1)) {
+          state.warnedFailures.delete(key);
         }
-        return;
       }
-
-      if (
+      const currentFailure = event.status === "error" ? windowFailure(state.recent, call) : null;
+      if (currentFailure !== null && currentFailure.count >= nudgeAfter) {
+        const key = `${currentFailure.call}:${currentFailure.observation}`;
+        if (!state.warnedFailures.has(key)) {
+          state.warnedFailures.add(key);
+          advice.push("Harness observation: repeated identical tool calls produced the same failure. Diagnose the cause and change approach; do not retry unchanged. This notice grants no additional permissions.");
+        }
+      } else if (
+        problem === null &&
         !streak.failed &&
         streak.call !== undefined &&
         streak.observation !== undefined &&
@@ -299,15 +324,20 @@ export async function setupLoopGuard(ctx: PluginContext): Promise<Plugin.Cleanup
         const key = `ok:${streak.call}:${streak.observation}`;
         if (state.warnedNudge !== key) {
           state.warnedNudge = key;
-          event.system.push({
-            type: "text",
-            text: "Harness observation: consecutive identical tool calls returned unchanged results. Prefer a different diagnostic or native completion notification over repeated polling. Successful calls remain available; this notice grants no additional permissions.",
+          advice.push("Harness observation: consecutive identical tool calls returned unchanged results. Prefer a different diagnostic or native completion notification over repeated polling. Successful calls remain available; this notice grants no additional permissions.");
+        }
+      } else if (problem === null) delete state.warnedNudge;
+
+      if (advice.length > 0) {
+        if (event.status === "completed") event.result = withAdvice(event.result, advice);
+        else {
+          event.error = new ToolError({
+            message: [event.error.message, ...advice].join("\n\n"),
+            ...(event.error.error === undefined ? {} : { error: event.error.error }),
+            ...(event.error.metadata === undefined ? {} : { metadata: event.error.metadata }),
           });
         }
-        return;
       }
-
-      if (problem === null) delete state.warnedNudge;
     }),
   ]);
 

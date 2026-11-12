@@ -10,13 +10,13 @@ Three small plugins informed by [Factory's frontier-harness article](https://fac
 | `frontier-compaction` | Adds continuity guidance; provides a known-cap 16,000-token fallback only when no output budget already exists. | Schedule compaction, replace supplied checkpoints, override an existing `maxTokens`, or rewrite conversation history. |
 | `frontier-insights` | Exposes `frontier_report` for local observations/native counters and `frontier_outcome` for self-reported assignment results and verified-descendant aggregates. | Store transcripts/tool arguments, expose siblings or unrelated sessions, independently verify outcomes, estimate savings, or claim section changes are provider cache misses. |
 
-The loop guard compares canonical JSON fingerprints of tool/input and content/output or error message, excluding volatile success metadata. Each session retains its last 16 observed executions plus a consecutive streak for configured thresholds above that window. Unrelated executions expire old failures, rather than immediately clearing them. A success or changed result resets the applicable exact call's failure count; a new prompt or reload clears its history. Changing successful results never form a stagnant streak, and unchanged successful results remain advisory-only. State is bounded to 128 sessions per plugin instance and can be evicted at that bound; no raw inputs, outputs, errors, or paths are retained.
+The loop guard compares canonical JSON fingerprints of tool/input and original content/output or error message, excluding its advice and volatile success metadata. Each session retains its last 16 observed executions plus a consecutive streak for configured thresholds above that window. Unrelated executions expire old failures, rather than immediately clearing them. A success or changed result resets the applicable exact call's failure count; a new prompt or reload clears its history. Changing successful results never form a stagnant streak, and unchanged successful results remain advisory-only. State is bounded to 128 sessions per plugin instance and can be evicted at that bound; no raw inputs, outputs, errors, or paths are retained.
 
 Exact native `edit` calls with identical `oldString` and `newString` are rejected before execution. Known native edit/patch mismatch errors produce advice to use the returned current hunk or reread the focused range, never automatic patching or fuzzy application. Ambiguous/malformed input receives advisory guidance only. Recurring-call and mismatch notices are deduplicated within the applicable problem episode. These classifications do not change tool inputs, permissions, or provider retries.
 
 The compaction instruction preserves the active goal and scope, completed versus unverified work, relevant paths and commands, blockers and next step, and authority constraints. Retrieved content stays untrusted, and summaries grant no new authority. The core or an earlier plugin may already supply `maxTokens`; this plugin preserves that value, so the fallback does not run on that path. A live 16k budget override was not verified or claimed. Model limits are captured at setup; reload after model-catalog changes when those limits matter.
 
-The loop guard's advice changes the system section when it appears or disappears. The existing prompt-cache projection can re-anchor its retained snapshots on those transitions. This is a bounded trade-off for loop recovery, not a cache-neutral optimization or measured saving.
+The loop guard appends advice to the triggering tool result or error, preserving the original model-visible content, output, and metadata. It does not add or remove system instructions as advice appears; subsequent requests can retain the advice in the normal conversation transcript. No provider cache savings are measured or claimed.
 
 Insights reports context preparations, system/tool-definition section changes, current message/tool counts, tool outcomes and total observed elapsed milliseconds, retry decisions, and compaction preparations. It does not count these as successful model requests or completed compactions. Model baselines are isolated by provider/model/variant and bounded to 16 per session; outstanding call timing is bounded to 256. Raw native token counters and cost are session lifetime values; observations cover only the current plugin instance and may reset on reload or eviction. Concurrent tool durations are summed, not wall-clock session duration.
 
@@ -40,14 +40,14 @@ Add independent entries to `plugins` in your V2 config:
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     { "package": "/absolute/path/opencode-frontier-harness/loop-guard", "options": { "enabled": true } },
-    // Keep an existing prompt-cache owner after the loop guard.
+    // Preserve any existing prompt-cache owner.
     { "package": "/absolute/path/opencode-frontier-harness/compaction", "options": { "enabled": true, "summaryTokens": 16000 } },
     { "package": "/absolute/path/opencode-frontier-harness/insights", "options": { "enabled": true } }
   ]
 }
 ```
 
-OpenCode watches config; no server restart is needed. Keep the loop-guard entry before the existing context-cache projection, and insights after it when you want to observe that projection. Preserve unrelated entries and settings.
+OpenCode watches config; no server restart is needed. Keep insights after the existing context-cache projection when you want to observe that projection. Preserve unrelated entries and settings.
 
 The package root also exports an aggregate plugin containing these three modules. Install either the aggregate or the independent entries, never both. Independent entries provide per-module options and ordering with existing plugins. Every module accepts `enabled: false`.
 
