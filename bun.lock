@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "opencode-frontier-harness",
+      "name": "hffmnnj.frontier-harness",
       "dependencies": {
         "@opencode/plugin": "2.2.1",
       },

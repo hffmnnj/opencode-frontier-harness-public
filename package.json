@@ -1,17 +1,38 @@
 {
-  "name": "opencode-frontier-harness",
+  "name": "hffmnnj.frontier-harness",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
   "description": "Research-grounded harness upgrades for OpenCode V2",
+  "type": "module",
   "exports": {
-    ".": "./index.ts"
+    ".": "./dist/index.js",
+    "./loop-guard": "./dist/loop-guard.js",
+    "./compaction": "./dist/compaction.js",
+    "./insights": "./dist/insights.js",
+    "./provider-compat": "./dist/provider-compat.js"
   },
+  "files": [
+    "dist",
+    "index.ts",
+    "loop-guard",
+    "compaction",
+    "insights",
+    "provider-compat",
+    "README.md",
+    "assets/banner.png"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test tests",
     "build": "bun build src/index.ts src/provider-compat.ts src/loop-guard.ts src/compaction.ts src/insights.ts --target=bun --external=@opencode/plugin --external=effect --outdir=dist",
-    "check": "bun run typecheck && bun run test && bun run build"
+    "check": "bun run typecheck && bun run test && bun run build",
+    "prepack": "bun run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hffmnnj/opencode-frontier-harness.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@opencode/plugin": "2.2.1"

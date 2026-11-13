@@ -45,4 +45,4 @@ export async function setupProviderCompat(ctx: PluginContext): Promise<Plugin.Cl
   return () => registration.dispose();
 }
 
-export default Plugin.define({ id: "frontier-provider-compat", setup: setupProviderCompat });
+export default Plugin.define({ id: "hffmnnj.frontier-provider-compat", setup: setupProviderCompat });
