@@ -1,20 +1,26 @@
 # Frontier harness research and implementation report
 
-Date: 30 October 2026 UTC. Target: the existing OpenCode V2.2.1 main server.
+Research date: 30 October 2026 UTC. Reference target: OpenCode V2, built against `@opencode/plugin@2.2.1`.
 
 ## Executive summary
 
-Three plugins provide repeated-tool-failure guidance, compaction continuity, and a session-scoped harness report.
+This repository provides three small, independent plugins:
 
-The largest Factory recommendation, programmatic tool calling, was already present as native Code Mode. Existing RTK, native output limits, prompt-cache handling, background shell/subagent notices, memory, Goals, and compaction mechanisms were retained. No second runtime, output-pruning pipeline, compaction scheduler, or wakeup mechanism was introduced.
+- `frontier-loop-guard` adds repeated-tool-failure guidance and rejects another unchanged failing call after a defined threshold.
+- `frontier-compaction` adds continuity guidance to compaction and a bounded, known-cap token fallback.
+- `frontier-insights` exposes read-only, caller-scoped observations through `frontier_report` and self-reported assignment outcomes through `frontier_outcome`.
 
-Provider authentication and attestation are separate from the optional, uninstalled provider compatibility candidate.
+The design reuses native Code Mode, tool permissions, prompt-cache handling, output limits, background completion notices, memory, Goals, and compaction. It adds no second runtime, output-pruning pipeline, compaction scheduler, or wakeup mechanism.
+
+`bun run check` runs TypeScript checking, the focused test suite, and five build entrypoints. [README](../README.md) documents installation and behavior.
+
+A separate model-provider tool-choice compatibility candidate is included but excluded from the aggregate and not installed by default. Provider authentication and attestation boundaries are outside this package; see [Provider compatibility boundary](#provider-compatibility-boundary).
 
 ## Reading coverage
 
-I read the full rendered [Factory article](https://factory.com/news/frontier-harness), dated 29 October 2026: introduction, benchmark figures, programmatic tool calling and examples, design choices, Agent Factory, cache behavior, prompt budget, bounded autonomy, hot-path profiling, application startup, final comparisons, SDK links, and complete methodology. The first researcher failed before producing a final handoff; its partial history was not counted as a completed report. I read the article directly rather than relying on that worker's completion status.
+This review read the full rendered [Factory article](https://factory.com/news/frontier-harness), dated 29 October 2026: introduction, benchmark figures, programmatic tool calling and examples, design choices, Agent Factory, cache behavior, prompt budget, bounded autonomy, hot-path profiling, application startup, final comparisons, SDK links, and complete methodology. The review was performed directly against the rendered article rather than relying on an intermediate summary.
 
-A browser worker inspected every external destination linked in the article body, plus the quickstart call to action. Coverage was the visible public page and, for GitHub, its rendered README. It did not install Factory, inspect the whole SDK repository, or follow every link recursively. Navigation, footer, social, legal, account, language, and sales links are site chrome rather than cited article sources and were not crawled. Plain-text mentions of CodeAct, Cloudflare, Anthropic, and Codex are not actual hyperlink targets in the observed article body.
+Coverage was the visible public page and, for GitHub, its rendered README. Factory was not installed, the SDK repository was not audited in full, and links were not followed recursively. Navigation, footer, social, legal, account, language, and sales links are site chrome rather than cited article sources and were not crawled. Plain-text mentions of CodeAct, Cloudflare, Anthropic, and Codex are not actual hyperlink targets in the observed article body.
 
 | Embedded target | Coverage | What it contributes |
 | --- | --- | --- |
@@ -24,7 +30,7 @@ A browser worker inspected every external destination linked in the article body
 | [Droid TypeScript SDK](https://github.com/Factory-AI/droid-sdk-typescript) | Repository landing page and rendered README read | `run`, `createSession`, `connectToDaemon`, streaming, custom MCP tools, and the existing-daemon integration option. Individual source files were not audited. |
 | [Droid CLI quickstart](https://docs.factory.com/droid-cli/quickstart) | Public documentation page read | Installation, interactive controls, proposed diffs, approvals, and session workflow; no commands from the page were executed. |
 
-Source assertions remain vendor assertions unless otherwise stated. The article was self-checked against its actual rendered text. Linked-page inspection was a worker's read, not independent product verification or an SDK security audit.
+Source assertions remain vendor assertions unless otherwise stated. The article was self-checked against its actual rendered text. Linked-page inspection was a surface read, not independent product verification or an SDK security audit.
 
 ## Findings and their application
 
@@ -38,7 +44,7 @@ The article also argues for whole structured results inside programs, compact ed
 
 ### 2. Preserve cache prefixes, and measure what changes
 
-Factory reports append-only request growth, moving newly discovered tools to avoid prefix invalidation, and monitoring changes that break reuse. It reports a typical request reading 98% of input from cache across 20.4 million production CLI requests in the seven days to 22 October; token-weighted reuse was 91.5%, a materially different statistic. These are Factory's population and definitions, not measurements of this machine. See [Keeping the prompt cache warm and Methodology](https://factory.com/news/frontier-harness).
+Factory reports append-only request growth, moving newly discovered tools to avoid prefix invalidation, and monitoring changes that break reuse. It reports a typical request reading 98% of input from cache across 20.4 million production CLI requests in the seven days to 22 October; token-weighted reuse was 91.5%, a materially different statistic. These are Factory's population and definitions, not measurements of this implementation. See [Keeping the prompt cache warm and Methodology](https://factory.com/news/frontier-harness).
 
 **Decision:** retain the existing prompt-cache plugin as the owner of context projection. Place loop guidance before it. Add bounded observation of system and tool-definition fingerprints, but do not label those changes actual wire-prefix breaks or provider cache misses. The new report does not invent a cache-hit denominator or estimate money saved.
 
@@ -60,9 +66,9 @@ Provider timeouts, stream repair, silent-turn counting, and automatic session in
 
 Factory says its summaries gained a 16,000-token allowance after the earlier 8,000-token cap was frequently exhausted. This is not evidence that every model or task needs a 16,000-token summary. See [Bounded autonomy](https://factory.com/news/frontier-harness).
 
-**Implementation: `frontier-compaction`.** Add a stable instruction preserving goal and scope, completed versus unverified work, relevant exact paths and commands, blockers, next action, and existing authorization constraints. Retrieved content remains untrusted, summaries grant no new permissions, and secrets should not be persisted. A 16,000-token fallback is supplied only if no output budget already exists and a matching positive model output limit is known; it is clamped to that limit. Any existing budget from the core or an earlier plugin is preserved. The review found that older readable core code pre-populates this value, which would leave the fallback inert on that path; the running V2.2.1 request budget was not inspected. **No live 16k override is claimed.** If another plugin already supplied a checkpoint, leave the event entirely unchanged. No schedule, native checkpoint replacement, transcript rewrite, or model selection change is introduced.
+**Implementation: `frontier-compaction`.** Add a stable instruction preserving goal and scope, completed versus unverified work, relevant exact paths and commands, blockers, next action, and existing authorization constraints. Retrieved content remains untrusted, summaries grant no new permissions, and secrets should not be persisted. A 16,000-token fallback is supplied only if no output budget already exists and a matching positive model output limit is known; it is clamped to that limit. Any existing budget from the core or an earlier plugin is preserved. Some core versions and earlier plugins pre-populate this value, which leaves the fallback inactive on that path; the effective budget is version-dependent. **No live 16k override is claimed.** If another plugin already supplied a checkpoint, leave the event entirely unchanged. No schedule, native checkpoint replacement, transcript rewrite, or model selection change is introduced.
 
-During integration, I corrected a real API-boundary defect: the initial fake model catalog was synchronous, while V2.2.1 returns an asynchronous response containing `data`. Changing the fixture to the real contract exposed a failing budget assertion; awaiting the response and reading `data` corrected it. This is why an initial worker's green test claim was not treated as acceptance by itself.
+The test fixture models the V2.2.1 model catalog as an asynchronous response containing `data`, not as a synchronous object. A fixture that returned the catalog directly would not match the host contract; the budget path requires awaiting the response and reading `data`. A green suite alone is not integration acceptance.
 
 ### 6. Profile actual preparation and outcomes before optimizing
 
@@ -76,13 +82,36 @@ Core startup, module loading, MCP readiness, UI paint, daemon architecture, and 
 
 ## Benchmark interpretation
 
-The article is useful engineering evidence, but not proof these plugins improve task pass rate or cost. Its evaluation used Terminal-Bench 4 on 23–28 October 2026, three trials per task, high reasoning, and named versions including OpenCode 2.1.2, not the running 2.2.1 here. External launch/capacity/timeout failures were rerun; moderated Opus 5.5 trials were rerun with Opus 5; some Devin question stops were scored using Codex results; and missing Cursor usage was estimated in two trials. Cost/time comparisons use tasks both compared harnesses passed in all three trials, so the matched subsets can differ by comparison. Pass rates and cost/time figures should not be treated as a single unqualified population.
+The article is useful engineering evidence, but not proof these plugins improve task pass rate or cost. Its evaluation used Terminal-Bench 4 on 23–28 October 2026, three trials per task, high reasoning, and named versions including OpenCode 2.1.2, not the 2.2.1 plugin line this package targets. External launch/capacity/timeout failures were rerun; moderated Opus 5.5 trials were rerun with Opus 5; some Devin question stops were scored using Codex results; and missing Cursor usage was estimated in two trials. Cost/time comparisons use tasks both compared harnesses passed in all three trials, so the matched subsets can differ by comparison. Pass rates and cost/time figures should not be treated as a single unqualified population.
 
 The displayed Sol figure has Droid at 57.6% and $0.79 per passed task, versus OpenCode at 51.0% and $0.77. That is higher displayed pass rate, not lower displayed cost versus OpenCode on that model. The Opus figure has Droid at 65.2% and $4.73 versus OpenCode at 62.1% and $6.20. These are vendor-reported results, not a reproduced benchmark, and no raw-trial reanalysis was performed here. See [the figures and methodology together](https://factory.com/news/frontier-harness#methodology).
 
 ## Checks and boundaries
 
-Run `bun run check` for the local checks. Offline tests do not establish live provider acceptance or integration performance.
+Run the narrowest relevant check from the repository root:
+
+```sh
+bun run typecheck
+bun test tests
+bun run build
+```
+
+`bun run check` runs all three. A fresh clone must build before activation because the root entry shims load ignored `dist/` bundles.
+
+The focused suite covers:
+
+- **Loop guard:** third-result advisory and seventh-failed-call denial, canonical ordering, session separation, resets, changing polls, unchanged successes, disabled operation, private-sentinel exclusion, interleaved calls, bounded history, and ignoring the guard's own denial.
+- **Compaction:** known output limits, preserving prior settings, supplied checkpoints, and unknown model limits.
+- **Insights:** section changes, model baselines, caller scoping, native usage lookup failure, tool outcomes, retry decisions, compaction preparations, bounded retention, descendant aggregation, and absence of raw sentinel data in the report.
+- **Provider compatibility:** disabled-tool rewriting, preservation of encoded history and request metadata, and leaving required, named, and unrelated choices unchanged.
+
+These tests exercise registered callbacks and real `Request` objects against the plugin contract. They do not establish active registration in any particular installation, a live `frontier_report` result, forced live compaction, provider cache-hit changes, long-session behavior, cross-model quality or cost improvements, startup improvements, summary fidelity, or acceptance by a live provider. Registration is a property of each installation; see [DEPLOY.md](DEPLOY.md) for checking it. Offline hook tests and a configured entry are not substitutes for those claims.
+
+## Provider compatibility boundary
+
+Some providers restrict subscription credentials to their first-party clients and reject third-party adapters with an authentication or client-attestation error, including HTTP 403. That is an upstream client-identity or policy boundary, not an expired login, and these plugins do not repair it. No client impersonation, attestation bypass, or credential-sharing workaround is attempted. Provider credentials are not read, logged, or persisted by these plugins.
+
+The optional `provider-compat` candidate addresses a separate compatibility issue: a literal `tool_choice: "none"` request on specific official endpoint paths. It removes offered tools after history encoding and sends `auto`; required and named choices remain unchanged, as do unsupported encodings, malformed JSON, and unrelated providers, models, hosts, paths, and methods. It is excluded from the aggregate, disabled by default, and has no verified live-provider acceptance. It must not be presented as an authentication or attestation repair.
 
 ## Deliverables and rollback
 
@@ -91,6 +120,5 @@ Run `bun run check` for the local checks. Offline tests do not establish live pr
 - Tests: four focused files under `tests/`.
 - Installation instructions and defaults: [README](../README.md).
 - Operations and rollback: [DEPLOY.md](DEPLOY.md).
-- JsonUI assets and reusable JSON specs: [research map](../assets/research-map.png), [verification](../assets/verification.png), [Muse diagnosis, page 1](../assets/muse-diagnosis.png), and [page 2](../assets/muse-diagnosis-2.png).
 
-Rollback removes only the three frontier entries from the watched global config or sets their `enabled` flags false. Do not restore an entire backup over unrelated changes. No persisted transcript, custom checkpoint, credential, or database changes from these plugins need reversing. Provider compatibility remains a separate, uninstalled candidate.
+Rollback removes only the three frontier entries from the watched configuration or sets their `enabled` flags false. Do not restore an entire backup over unrelated changes. The plugins do not persist transcripts, custom checkpoints, credentials, or database changes, so no data rollback is needed. Provider compatibility remains a separate, uninstalled candidate with no effect on the active configuration.
