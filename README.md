@@ -14,13 +14,13 @@ Three small plugins informed by [Factory's frontier-harness article](https://fac
 
 ### `frontier-loop-guard`
 
-The loop guard compares canonical JSON fingerprints of tool/input and content/output or error message, excluding volatile success metadata. Each session retains its last 16 observed executions plus a consecutive streak for configured thresholds above that window. Unrelated executions expire old failures, rather than immediately clearing them. A success or changed result resets the applicable exact call's failure count; a new prompt or reload clears its history.
+The loop guard compares canonical JSON fingerprints of tool/input and original content/output or error message, excluding its advice and volatile success metadata. Each session retains its last 16 observed executions plus a consecutive streak for configured thresholds above that window. Unrelated executions expire old failures, rather than immediately clearing them. A success or changed result resets the applicable exact call's failure count; a new prompt or reload clears its history.
 
 Changing successful results never form a stagnant streak, and unchanged successful results remain advisory-only. State is bounded to 128 sessions per plugin instance and can be evicted at that bound; no raw inputs, outputs, errors, or paths are retained.
 
 Exact native `edit` calls with identical `oldString` and `newString` are rejected before execution. Known native edit/patch mismatch errors produce advice to use the returned current hunk or reread the focused range, never automatic patching or fuzzy application. Ambiguous/malformed input receives advisory guidance only. Recurring-call and mismatch notices are deduplicated within the applicable problem episode. These classifications do not change tool inputs, permissions, or provider retries.
 
-**Prompt-cache trade-off.** The loop guard's advice changes the system section when it appears or disappears. The existing prompt-cache projection can re-anchor its retained snapshots on those transitions. This is a bounded trade-off for loop recovery, not a cache-neutral optimization or measured saving.
+The loop guard appends advice to the triggering tool result or error, preserving the original model-visible content, output, and metadata. It does not add or remove system instructions as advice appears; subsequent requests can retain the advice in the normal conversation transcript. No provider cache savings are measured or claimed.
 
 ### `frontier-compaction`
 
@@ -70,14 +70,14 @@ bun run check
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     { "package": "/absolute/path/opencode-frontier-harness/loop-guard", "options": { "enabled": true } },
-    // Keep an existing prompt-cache owner after the loop guard.
+    // Preserve any existing prompt-cache owner.
     { "package": "/absolute/path/opencode-frontier-harness/compaction", "options": { "enabled": true, "summaryTokens": 16000 } },
     { "package": "/absolute/path/opencode-frontier-harness/insights", "options": { "enabled": true } }
   ]
 }
 ```
 
-OpenCode watches config; no server restart is needed. Keep the `loop-guard` entry before the existing context-cache projection, and `insights` after it when you want to observe that projection. Preserve unrelated entries and settings.
+OpenCode watches config; no server restart is needed. Keep insights after the existing context-cache projection when you want to observe that projection. Preserve unrelated entries and settings.
 
 The package root also exports an aggregate plugin containing these three modules. Install either the aggregate or the independent entries, never both. Independent entries provide per-module options and ordering with existing plugins. Every module accepts `enabled: false`.
 
