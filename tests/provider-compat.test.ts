@@ -50,7 +50,7 @@ describe("provider compatibility", () => {
   it("none removes every offered tool while preserving encoded Responses and Chat history", async () => {
     const f = fixture();
     const cleanup = await setupProviderCompat(f.ctx);
-    expect(compat.id).toBe("frontier-provider-compat");
+    expect(compat.id).toBe("hffmnnj.frontier-provider-compat");
     expect(f.scope).toEqual({ providerID: "opencode-go" });
     const history = [
       { type: "custom_tool_call", call_id: "c1", name: "shell", input: "pwd" },

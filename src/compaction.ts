@@ -50,4 +50,4 @@ export async function setupCompaction(ctx: PluginContext): Promise<Plugin.Cleanu
   };
 }
 
-export default Plugin.define({ id: "frontier-compaction", setup: setupCompaction });
+export default Plugin.define({ id: "hffmnnj.frontier-compaction", setup: setupCompaction });

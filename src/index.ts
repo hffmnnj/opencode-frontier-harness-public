@@ -4,7 +4,7 @@ import { setupCompaction } from "./compaction";
 import { setupInsights } from "./insights";
 
 export default Plugin.define({
-  id: "frontier-harness",
+  id: "hffmnnj.frontier-harness",
   async setup(ctx) {
     const cleanups: Plugin.Cleanup[] = [];
     try {

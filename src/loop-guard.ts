@@ -317,4 +317,4 @@ export async function setupLoopGuard(ctx: PluginContext): Promise<Plugin.Cleanup
   };
 }
 
-export default Plugin.define({ id: "frontier-loop-guard", setup: setupLoopGuard });
+export default Plugin.define({ id: "hffmnnj.frontier-loop-guard", setup: setupLoopGuard });

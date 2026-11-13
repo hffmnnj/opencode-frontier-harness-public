@@ -423,4 +423,4 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
   };
 }
 
-export default Plugin.define({ id: "frontier-insights", setup: setupInsights });
+export default Plugin.define({ id: "hffmnnj.frontier-insights", setup: setupInsights });
