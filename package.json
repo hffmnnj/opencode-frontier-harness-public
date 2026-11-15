@@ -1,6 +1,6 @@
 {
   "name": "hffmnnj.frontier-harness",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Research-grounded harness upgrades for OpenCode V2",
   "type": "module",
   "exports": {
