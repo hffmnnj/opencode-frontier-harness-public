@@ -166,9 +166,11 @@ describe("insights tool retry compaction observations", () => {
     fire(fake.toolHooks, "execute.after", { tool: "read", sessionID: "ses-a", id: "call-1", input: {}, status: "completed", result: { content: "TOP-SECRET-OUTPUT" } });
     fire(fake.toolHooks, "execute.before", { tool: "bash", sessionID: "ses-a", id: "call-2", input: {} });
     fire(fake.toolHooks, "execute.after", { tool: "bash", sessionID: "ses-a", id: "call-2", input: {}, status: "error", error: { message: "TOP-SECRET-ERROR" } });
-    // Own report tool traffic must not pollute observations.
+    // Own report and outcome traffic must not pollute observations.
     fire(fake.toolHooks, "execute.before", { tool: REPORT_TOOL_NAME, sessionID: "ses-a", id: "call-9", input: {} });
     fire(fake.toolHooks, "execute.after", { tool: REPORT_TOOL_NAME, sessionID: "ses-a", id: "call-9", input: {}, status: "completed", result: {} });
+    fire(fake.toolHooks, "execute.before", { tool: OUTCOME_TOOL_NAME, sessionID: "ses-a", id: "call-10", input: {} });
+    fire(fake.toolHooks, "execute.after", { tool: OUTCOME_TOOL_NAME, sessionID: "ses-a", id: "call-10", input: {}, status: "error", error: { message: "own traffic" } });
 
     const retryEvent = { sessionID: "ses-a", decision: { retry: true, delay: 100 } };
     fire(fake.sessionHooks, "retry", retryEvent);
@@ -319,30 +321,92 @@ describe("self-reported outcomes", () => {
     expect((await reportFor(fake, "root")).descendantSelfReports.reports).toBe(0);
   });
 
-  test("coalesces repeated blocker advice and re-advises after the threshold clears", async () => {
-    const fake = nativeTree({ root: undefined, a: "root", b: "root", c: "root", outsider: undefined });
+  // Contract: shared-blocker advice reaches the parent only by appending to the
+  // next completed tool result, context preparation stays read-only, and each
+  // category dedupes and re-arms independently.
+  // Faults it rejects: mutating system/messages/tools, rewriting a prior result,
+  // consuming advice on a failed result, counting own report traffic, or warning
+  // another session.
+  test("delivers blocker advice on the next completed result without mutating context or prior results", async () => {
+    const fake = nativeTree({ root: undefined, a: "root", b: "root", c: "root", d: "root", e: "root", f: "root", outsider: undefined });
     await setupInsights(fake.ctx);
-    for (const id of ["a", "b", "c", "outsider"]) await outcomeFor(fake, id, { outcome: "blocked", checks: checks(0, 0, 1), blocker: "authentication", artifacts: 0 });
-    const first = contextEvent("root", { providerID: "p", id: "m" }, [], {});
-    fire(fake.sessionHooks, "context", first);
-    expect(first.system).toHaveLength(1);
-    expect(first.system[0].text).toContain("authentication");
-    expect(first.system[0].text).toContain("self-report");
-    expect(first.system[0].text).toContain("no permissions");
-    const second = contextEvent("root", { providerID: "p", id: "m" }, [], {});
-    fire(fake.sessionHooks, "context", second);
-    expect(second.system).toHaveLength(0);
-    const sibling = contextEvent("a", { providerID: "p", id: "m" }, [], {});
-    fire(fake.sessionHooks, "context", sibling);
-    expect(sibling.system).toHaveLength(0);
+    for (const id of ["a", "b", "c"]) await outcomeFor(fake, id, { outcome: "blocked", checks: checks(0, 0, 1), blocker: "authentication", artifacts: 0 });
+    for (const id of ["d", "e", "outsider"]) await outcomeFor(fake, id, { outcome: "blocked", checks: checks(0, 0, 1), blocker: "tooling", artifacts: 0 });
+
+    const system = [{ type: "text", text: "stable system prefix" }];
+    const tools = { read: { description: "d", input: { type: "object" } } };
+    const context = contextEvent("root", { providerID: "p", id: "m" }, system, tools);
+    const messages = context.messages;
+    fire(fake.sessionHooks, "context", context);
+    fire(fake.sessionHooks, "context", context);
+    expect(context.system).toBe(system);
+    expect(context.messages).toBe(messages);
+    expect(context.tools).toBe(tools);
+    expect(system).toEqual([{ type: "text", text: "stable system prefix" }]);
+
+    const completed = (sessionID: string, id: string, tool = "read", result: any = { content: "original-content" }): any => {
+      const event = { sessionID, id, tool, input: {}, status: "completed", result };
+      fire(fake.toolHooks, "execute.after", event);
+      return event;
+    };
+    const failed = (sessionID: string, id: string): any => {
+      const event = { sessionID, id, tool: "read", input: {}, status: "error", error: { message: "original-error" } };
+      fire(fake.toolHooks, "execute.after", event);
+      return event;
+    };
+
+    // Descendants and unrelated sessions neither receive nor consume the advice.
+    for (const id of ["a", "outsider"]) expect(completed(id, `unrelated-${id}`).result.content).toBe("original-content");
+
+    const original = { content: "original-content", output: { progress: 42 }, metadata: { source: "worker" } };
+    const first = completed("root", "call-1", "read", original);
+    expect(first.result.output).toBe(original.output);
+    expect(first.result.metadata).toBe(original.metadata);
+    expect(first.result.content).toEqual([
+      { type: "text", text: "original-content" },
+      { type: "text", text: expect.stringContaining("authentication") },
+    ]);
+    expect(first.result.content[1].text).toContain("self-report");
+    expect(first.result.content[1].text).toContain("no permissions");
+    const delivered = JSON.parse(JSON.stringify(first.result.content));
+
+    // The advised category stays quiet, and the prior delivered result is untouched.
+    expect(completed("root", "call-2").result.content).toBe("original-content");
+    expect(first.result.content).toEqual(delivered);
+
+    // A category crossing the threshold later is fresh even while another is deduped.
+    await outcomeFor(fake, "f", { outcome: "blocked", checks: checks(0), blocker: "tooling", artifacts: 0 });
+    const tooling = completed("root", "call-3");
+    expect(tooling.result.content).toEqual([
+      { type: "text", text: "original-content" },
+      { type: "text", text: expect.stringContaining("tooling") },
+    ]);
+    expect(tooling.result.content[1].text).not.toContain("authentication");
+
+    // Dropping every category clears the episode; a rebuilt count is fresh again.
     await outcomeFor(fake, "c", { outcome: "complete", checks: checks(1), artifacts: 0 });
-    const below = contextEvent("root", { providerID: "p", id: "m" }, [], {});
-    fire(fake.sessionHooks, "context", below);
-    expect(below.system).toHaveLength(0);
-    await outcomeFor(fake, "c", { outcome: "blocked", checks: checks(0), blocker: "authentication", artifacts: 0 });
-    const again = contextEvent("root", { providerID: "p", id: "m" }, [], {});
-    fire(fake.sessionHooks, "context", again);
-    expect(again.system).toHaveLength(1);
+    await outcomeFor(fake, "f", { outcome: "complete", checks: checks(1), artifacts: 0 });
+    expect(completed("root", "call-4").result.content).toBe("original-content");
+    await outcomeFor(fake, "c", { outcome: "blocked", checks: checks(0), blocker: "tooling", artifacts: 0 });
+
+    // A failed result never consumes the pending warning or mutates the error.
+    const failure = failed("root", "call-5");
+    expect(failure.error).toEqual({ message: "original-error" });
+    expect("result" in failure).toBe(false);
+
+    // frontier_report may carry the advice, but its own traffic is not counted.
+    const before = await reportFor(fake, "root");
+    const reported = completed("root", "call-6", REPORT_TOOL_NAME);
+    expect(reported.result.content).toEqual([
+      { type: "text", text: "original-content" },
+      { type: "text", text: expect.stringContaining("tooling") },
+    ]);
+    expect(reported.result.content[1].text).not.toContain("authentication");
+    const after = await reportFor(fake, "root");
+    expect(after.completedTools).toBe(before.completedTools);
+    expect(after.errorTools).toBe(before.errorTools);
+
+    expect(completed("root", "call-7").result.content).toBe("original-content");
   });
 
   test("limits pending native lookups and cleanup releases callers even when the transport never settles", async () => {

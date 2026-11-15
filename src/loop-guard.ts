@@ -175,7 +175,7 @@ function noopError(): ToolError {
 }
 
 // Match the host's content fallback before appending, including empty arrays.
-function withAdvice(result: ToolResult, advice: string[]): ToolResult {
+export function withAdvice(result: ToolResult, advice: string[]): ToolResult {
   let content = result.content;
   if (content === undefined || (Array.isArray(content) && content.length === 0)) {
     let text: string;

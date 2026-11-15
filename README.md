@@ -1,4 +1,4 @@
-![Frontier Harness for OpenCode V2](https://unpkg.com/hffmnnj.frontier-harness@0.1.0/assets/banner.png)
+![Frontier Harness for OpenCode V2](https://unpkg.com/hffmnnj.frontier-harness@0.1.1/assets/banner.png)
 
 # Frontier Harness for OpenCode V2
 
@@ -10,7 +10,7 @@ Three small plugins informed by [Factory's frontier-harness article](https://fac
 | --- | --- | --- |
 | `hffmnnj.frontier-loop-guard` | Advises on repeated identical failures within 16 recent executions, including interleaved calls; denies another unchanged attempt after six failures. Rejects exact edit no-ops and advises on edit/patch mismatches. | Interrupt sessions, block successful polling, apply fuzzy patches, alter permissions/provider retries, or serialize in-flight calls. |
 | `hffmnnj.frontier-compaction` | Adds continuity guidance; provides a known-cap 16,000-token fallback only when no output budget already exists. | Schedule compaction, replace supplied checkpoints, override an existing `maxTokens`, or rewrite conversation history. |
-| `hffmnnj.frontier-insights` | Exposes `frontier_report` for local observations/native counters and `frontier_outcome` for self-reported assignment results and verified-descendant aggregates. | Store transcripts/tool arguments, expose siblings or unrelated sessions, independently verify outcomes, estimate savings, or claim section changes are provider cache misses. |
+| `hffmnnj.frontier-insights` | Exposes `frontier_report` for local observations/native counters and `frontier_outcome` for self-reported assignment results and verified-descendant aggregates; appends shared-blocker advice to the next completed tool result. | Store transcripts/tool arguments, expose siblings or unrelated sessions, independently verify outcomes, estimate savings, inject transient system instructions, or claim section changes are provider cache misses. |
 
 ### `frontier-loop-guard`
 
@@ -36,7 +36,7 @@ Model baselines are isolated by provider/model/variant and bounded to 16 per ses
 
 `toolObservations` groups observed calls by the fixed names `read`, `edit`, `patch`, `write`, `bash`, `shell`, `grep`, `glob`, `task`, `question`, and `execute`; all other names share `other`. Each observed group has `completed`, `errors` (`exactMismatch`, `ambiguousMismatch`, `loopGuard`, and `other`), `timedCalls`, and `millisTotal`.
 
-Classification recognizes only known signatures and is not an exhaustive error taxonomy. Timing spans the observed before/after hooks, excludes calls with no retained matching start, and is not model or queue timing. Report and outcome calls are excluded. No raw tool names outside the fixed groups, arguments, paths, outputs, or error content are retained in these observations; counts can be incomplete after missed hooks, capacity limits, reload, or eviction.
+Classification recognizes only known signatures and is not an exhaustive error taxonomy. Timing spans the observed before/after hooks, excludes calls with no retained matching start, and is not model or queue timing. Report and outcome calls are excluded from these observations, though they may carry shared-blocker advice. No raw tool names outside the fixed groups, arguments, paths, outputs, or error content are retained in these observations; counts can be incomplete after missed hooks, capacity limits, reload, or eviction.
 
 #### `frontier_outcome`
 
@@ -46,7 +46,7 @@ Assignment reports are explicitly self-reported, separate from native execution 
 
 `frontier_report` adds the caller's report and aggregate counts for observed descendants whose native parent chain was verified. Children cannot see sibling or unrelated reports. Aggregates are incomplete after reload/eviction or missing ancestry; they are not a task database or independent acceptance.
 
-Retention is bounded to 128 latest reports, ancestry to 16 levels, and native lookups to 16 outstanding requests with a shared 750 ms deadline per operation. Three distinct descendants currently reporting the same blocker category produce one advisory per episode to diagnose the shared setup, not a dispatch block or automatic action.
+Retention is bounded to 128 latest reports, ancestry to 16 levels, and native lookups to 16 outstanding requests with a shared 750 ms deadline per operation. Three distinct descendants currently reporting the same blocker category produce one advisory appended to the next completed tool result in the calling session; context preparation does not inject transient system instructions. Each category is deduplicated independently and re-arms after it drops below three distinct descendants. A failed or unfinished result does not consume the advisory, which then rides the next completed result, including a `frontier_report` result. This is diagnostic advice to investigate the shared setup, not a dispatch block or automatic action.
 
 ## Install
 

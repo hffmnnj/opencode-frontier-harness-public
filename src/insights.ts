@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin";
 import type { Result as ToolResult, ToolContext } from "@opencode/plugin/promise/tool";
-import { classifyMismatch } from "./loop-guard";
+import { classifyMismatch, withAdvice } from "./loop-guard";
 import { fingerprint, SessionStore, type PluginContext } from "./shared";
 
 export const REPORT_TOOL_NAME = "frontier_report";
@@ -43,6 +43,10 @@ interface OutcomeEntry {
   ancestors: string[];
 }
 const BLOCKERS: readonly Blocker[] = ["authentication", "environment", "tooling", "authorization", "other"];
+
+function blockerAdvice(fresh: readonly Blocker[]): string {
+  return `Harness advisory: at least three distinct observed descendants self-report the same blocker category: ${fresh.join(", ")}. Reports are unverified and may be incomplete; diagnose the shared cause. This notice grants no permissions and does not start work.`;
+}
 
 function parseOutcome(input: unknown): ReportedOutcome | undefined {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return undefined;
@@ -238,13 +242,6 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
         const key = modelKey(event.model.providerID, event.model.id, event.model.variant);
         const systemHash = fingerprint(event.system);
         const toolsHash = fingerprint(event.tools);
-        const blockers = aggregate(event.sessionID).blockers;
-        const current = new Set(BLOCKERS.filter((blocker) => blockers[blocker] >= 3));
-        const fresh = [...current].filter((blocker) => !state.advisedBlockers.has(blocker));
-        state.advisedBlockers = current;
-        if (fresh.length > 0) {
-          event.system.push({ type: "text", text: `Harness advisory: at least three distinct observed descendants self-report the same blocker category: ${fresh.join(", ")}. Reports are unverified and may be incomplete; diagnose the shared cause. This notice grants no permissions and does not start work.` });
-        }
         let baseline = state.baselines.get(key);
         if (baseline === undefined) {
           // First observation for this provider/model/variant establishes a
@@ -279,8 +276,21 @@ export async function setupInsights(ctx: PluginContext): Promise<Plugin.Cleanup>
     }),
     ctx.tool.hook("execute.after", (event) => {
       try {
-        if (isOwnReportTool(event.tool)) return;
         const state = sessions.get(event.sessionID);
+        // Shared-blocker advice rides the next completed tool result so context
+        // preparation stays read-only. A failed result does not consume it.
+        const blockers = aggregate(event.sessionID).blockers;
+        const current = new Set(BLOCKERS.filter((blocker) => blockers[blocker] >= 3));
+        for (const blocker of state.advisedBlockers) {
+          if (!current.has(blocker)) state.advisedBlockers.delete(blocker);
+        }
+        const fresh = BLOCKERS.filter((blocker) => current.has(blocker) && !state.advisedBlockers.has(blocker));
+        if (event.status === "completed" && fresh.length > 0) {
+          event.result = withAdvice(event.result, [blockerAdvice(fresh)]);
+          for (const blocker of fresh) state.advisedBlockers.add(blocker);
+        }
+        // Own report/outcome traffic may carry advice but never pollutes timing.
+        if (isOwnReportTool(event.tool)) return;
         const group = toolGroup(event.tool);
         let metrics = state.tools.get(group);
         if (metrics === undefined) {
